@@ -702,8 +702,9 @@ mod web {
     /// cannot be read) the editor shows the start view.
     #[wasm_bindgen]
     pub async fn run(asset_base: Option<String>, file_name: Option<String>, file: Option<Vec<u8>>) -> Result<(), JsValue> {
-        let document = file.and_then(|data| match ibis_pptx::read(&data) {
-            Ok(presentation) => Some((presentation, file_name.unwrap_or_default().into())),
+        // Opened as ファイル > 開く opens a file, so that it is saved as one.
+        let document = file.and_then(|data| match ibis_pptx::open(data) {
+            Ok(opened) => Some((opened, SharedString::from(file_name.unwrap_or_default()))),
             Err(err) => {
                 log::error!("{err}");
                 None
@@ -746,7 +747,10 @@ mod web {
             super::init(cx);
             Theme::global_mut(cx).font_family = "IBM Plex Sans".into();
             let blank = document.is_none().then(crate::shell::web::new_kind_of_address).flatten();
-            super::open_editor(document, None, cx);
+            match document {
+                Some((opened, name)) => crate::shell::agent::open_editor_with_source(opened, name, cx),
+                None => super::open_editor(None, None, cx),
+            }
             if let Some(kind) = blank {
                 crate::shell::app::new_file_in_page(kind, cx);
             }
@@ -755,6 +759,39 @@ mod web {
         });
         APPLICATION.with(|app| *app.borrow_mut() = Some(handle));
         Ok(())
+    }
+
+    /// The agent's edits on the page's document (`shell::agent`), for `www/main.ts`'s `ibisoffice-agent` messages.
+    fn with_editor<R>(f: impl FnOnce(&mut crate::SlideEditor, &mut Window, &mut Context<crate::SlideEditor>) -> Result<R, String>) -> Result<R, JsValue> {
+        APPLICATION.with(|app| {
+            let app = app.borrow();
+            let handle = app.as_ref().ok_or_else(|| JsValue::from_str("the editor has not started"))?;
+            handle.update(|cx| crate::shell::agent::with_page_editor(cx, f)).map_err(|e| JsValue::from_str(&e))
+        })
+    }
+
+    /// The document with its slides' and shapes' ids, in JSON (`ibis_agent::Inspection`).
+    #[wasm_bindgen]
+    pub fn agent_inspect() -> Result<String, JsValue> {
+        with_editor(|editor, _, _| editor.agent_inspect())
+    }
+
+    /// Apply operations (a JSON array of `ibis_agent::Op`) as one edit; answers `{created, document}` in JSON.
+    #[wasm_bindgen]
+    pub fn agent_apply(ops: &str) -> Result<String, JsValue> {
+        with_editor(|editor, window, cx| editor.agent_apply(ops, window, cx))
+    }
+
+    /// The file as it is now (the document is marked saved).
+    #[wasm_bindgen]
+    pub fn agent_save() -> Result<Vec<u8>, JsValue> {
+        with_editor(|editor, _, cx| editor.agent_save(cx).map(|(_, bytes)| bytes))
+    }
+
+    /// `{dirty, revision}` in JSON: whether there are changes not saved, and a number every edit, undo and redo changes.
+    #[wasm_bindgen]
+    pub fn agent_state() -> Result<String, JsValue> {
+        with_editor(|editor, _, _| editor.agent_state())
     }
 }
 

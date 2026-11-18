@@ -3258,6 +3258,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ibis-agent"
+version = "0.8.0"
+dependencies = [
+ "ibis-doc-model",
+ "ibis-pptx",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "ibis-appimage"
 version = "0.8.0"
 dependencies = [
@@ -3465,6 +3476,7 @@ dependencies = [
  "gpui-pre-platform",
  "gpui-pre-wgpu",
  "gpui-pre-windows",
+ "ibis-agent",
  "ibis-calc",
  "ibis-doc-model",
  "ibis-emf",
@@ -3480,6 +3492,7 @@ dependencies = [
  "moxcms",
  "notify",
  "objc",
+ "serde_json",
  "ttf-parser",
  "usvg 0.46.0",
  "wasm-bindgen",

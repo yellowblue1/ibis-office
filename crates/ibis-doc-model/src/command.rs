@@ -1098,6 +1098,8 @@ pub struct Document {
     /// The file this document is saved as (its whole path), for what the calculation says of it
     /// (`CELL("filename")`).
     file: Option<String>,
+    /// Counts the edits, undos and redos applied (`Document::revision`).
+    revision: u64,
 }
 
 impl Default for Document {
@@ -1108,7 +1110,7 @@ impl Default for Document {
 
 impl Document {
     pub fn new(presentation: Presentation) -> Self {
-        Self { presentation, undo: Vec::new(), redo: Vec::new(), repeat_sheet:Vec::new(), repeat_sheet_group:false, clean_undo_len: Some(0), file: None }
+        Self { presentation, undo: Vec::new(), redo: Vec::new(), repeat_sheet:Vec::new(), repeat_sheet_group:false, clean_undo_len: Some(0), file: None, revision: 0 }
     }
 
     /// Mark the current state of the document as saved (clean).
@@ -1159,6 +1161,12 @@ impl Document {
     }
 
     /// How many undo steps there are (a mark to tell whether the document was edited since).
+    /// A number that changes whenever the document is changed through it (an edit, an undo, a redo): an undo followed by
+    /// another edit leaves the undo stack as long as before, so its length does not tell.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
     pub fn undo_len(&self) -> usize {
         self.undo.len()
     }
@@ -1250,6 +1258,7 @@ impl Document {
 
     /// Apply in order; return inverses in the order that undoes them.
     fn apply_all(&mut self, commands: Vec<Command>) -> Result<Vec<Command>, EditError> {
+        self.revision += 1;
         // (Calculated for this document: its file's name, not another open one's.)
         ibis_calc::eval::convert::set_workbook_file(self.file.clone());
         let mut inverses = Vec::with_capacity(commands.len());
