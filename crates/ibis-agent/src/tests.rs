@@ -12,8 +12,12 @@ fn apply(session: &mut Session, json: &str) -> Result<Vec<Created>, OpError> {
     session.apply(&parse_ops(json).unwrap())
 }
 
-fn texts(session: &Session) -> Vec<Vec<String>> {
+fn texts(session: &Session) -> Vec<Vec<Vec<String>>> {
     session.inspect().slides.iter().map(|s| s.shapes.iter().filter_map(|sh| sh.text.clone()).collect()).collect()
+}
+
+fn paragraphs(list: &[&str]) -> Vec<String> {
+    list.iter().map(|p| p.to_string()).collect()
 }
 
 /// The new presentation's title slide, its layouts and its empty placeholders, as the agent reads them.
@@ -40,10 +44,10 @@ fn a_slide_made_and_filled_is_one_undo_and_saves() {
         &mut session,
         r#"[
             {"op": "add_slide", "layout": "タイトルとコンテンツ", "as": "agenda"},
-            {"op": "set_text", "slide": "agenda", "shape": {"placeholder": "title"}, "text": "本日の議題"},
-            {"op": "set_text", "slide": "agenda", "shape": {"placeholder": "body"}, "text": "背景\n提案\n予定"},
-            {"op": "add_table", "slide": "agenda", "frame": {"x": 500, "y": 300, "w": 400, "h": 100}, "rows": [["項目", "期日"], ["試作", "12月"]], "as": "t"},
-            {"op": "set_cell", "slide": "agenda", "shape": "t", "row": 1, "column": 1, "text": "11月"}
+            {"op": "set_text", "slide": "agenda", "shape": {"placeholder": "title"}, "text": ["本日の議題"]},
+            {"op": "set_text", "slide": "agenda", "shape": {"placeholder": "body"}, "text": ["背景", "提案", "予定"]},
+            {"op": "add_table", "slide": "agenda", "frame": {"x": 500, "y": 300, "w": 400, "h": 100}, "rows": [[["項目"], ["期日"]], [["試作"], ["12月"]]], "as": "t"},
+            {"op": "set_cell", "slide": "agenda", "shape": "t", "row": 1, "column": 1, "text": ["11月"]}
         ]"#,
     )
     .unwrap();
@@ -53,20 +57,57 @@ fn a_slide_made_and_filled_is_one_undo_and_saves() {
     let doc = session.inspect();
     assert_eq!(doc.slides.len(), 2);
     assert_eq!(doc.slides[1].layout.as_deref(), Some("タイトルとコンテンツ"));
-    assert_eq!(texts(&session)[1][..2], ["本日の議題".to_string(), "背景\n提案\n予定".to_string()]);
+    assert_eq!(texts(&session)[1][..2], [paragraphs(&["本日の議題"]), paragraphs(&["背景", "提案", "予定"])]);
     let table = doc.slides[1].shapes.iter().find(|s| s.kind == "table").unwrap();
-    assert_eq!(table.cells.as_ref().unwrap()[1], ["試作", "11月"]);
+    assert_eq!(table.cells.as_ref().unwrap()[1], [paragraphs(&["試作"]), paragraphs(&["11月"])]);
     assert!(doc.dirty);
 
     let saved = session.save().unwrap();
     let again = Session::open(saved, "saved.pptx").unwrap();
     assert_eq!(texts(&again)[1][..2], texts(&session)[1][..2]);
     let table = again.inspect().slides[1].shapes.iter().find(|s| s.kind == "table").unwrap().cells.clone().unwrap();
-    assert_eq!(table, vec![vec!["項目", "期日"], vec!["試作", "11月"]]);
+    assert_eq!(table, vec![vec![paragraphs(&["項目"]), paragraphs(&["期日"])], vec![paragraphs(&["試作"]), paragraphs(&["11月"])]]);
 
     assert!(session.document.undo());
     assert_eq!(session.presentation().slides, before.slides);
     assert!(!session.document.can_undo());
+}
+
+/// Text goes in as the paragraphs it is read out as: what inspect gives, given back, changes nothing, and a cell's
+/// paragraphs are a cell's too.
+#[test]
+fn text_is_read_and_written_as_the_same_paragraphs() {
+    let mut session = blank();
+    let slide = session.inspect().slides[0].id;
+    apply(
+        &mut session,
+        &format!(
+            r#"[{{"op": "set_text", "slide": {slide}, "shape": {{"placeholder": "subTitle"}}, "text": ["Empowering teams", "", "[Date / Presenter]"]}},
+                {{"op": "add_table", "slide": {slide}, "rows": [[["one", "two"]]]}}]"#
+        ),
+    )
+    .unwrap();
+    let doc = session.inspect();
+    let subtitle = doc.slides[0].shapes.iter().find(|s| s.placeholder.as_deref() == Some("subTitle")).unwrap();
+    assert_eq!(subtitle.text.clone().unwrap(), paragraphs(&["Empowering teams", "", "[Date / Presenter]"]));
+    let body = session.presentation().slides[0].shapes.iter().find(|s| s.id.0 == subtitle.id).unwrap().text_body().unwrap();
+    assert_eq!(body.paragraphs.len(), 3);
+    assert_eq!(doc.slides[0].shapes.iter().find(|s| s.kind == "table").unwrap().cells.as_ref().unwrap()[0][0], paragraphs(&["one", "two"]));
+
+    let json = serde_json::to_string(&subtitle.text).unwrap();
+    let before = session.presentation().slides.clone();
+    apply(&mut session, &format!(r#"{{"op": "set_text", "slide": {slide}, "shape": {}, "text": {json}}}"#, subtitle.id)).unwrap();
+    assert_eq!(session.presentation().slides, before);
+}
+
+/// A paragraph holds no line break: one is refused with where it is, so a paragraph is never split by a character
+/// the agent wrote, nor a written `\n` taken for one.
+#[test]
+fn a_line_break_in_a_paragraph_is_refused() {
+    let err = parse_ops(r#"{"op": "set_text", "slide": 1, "shape": 1, "text": ["a", "b\nc"]}"#).unwrap_err();
+    assert!(err.contains("paragraph 1 has a line break"), "{err}");
+    let err = parse_ops(r#"{"op": "set_text", "slide": 1, "shape": 1, "text": "a"}"#).unwrap_err();
+    assert!(err.contains("operation 0"), "{err}");
 }
 
 /// The document's revision changes with an edit, its undo and an edit after it, where the undo stack's length does not.
@@ -89,7 +130,7 @@ fn the_revision_tells_every_change() {
 fn a_failing_operation_changes_nothing() {
     let mut session = blank();
     let before = session.presentation().clone();
-    let err = apply(&mut session, r#"[{"op": "add_slide"}, {"op": "set_text", "slide": 999, "shape": 1, "text": "x"}]"#).unwrap_err();
+    let err = apply(&mut session, r#"[{"op": "add_slide"}, {"op": "set_text", "slide": 999, "shape": 1, "text": ["x"]}]"#).unwrap_err();
     assert_eq!(err.index, Some(1));
     assert!(err.message.contains("no slide 999"), "{err}");
     assert_eq!(session.presentation().slides, before.slides);
@@ -108,12 +149,12 @@ fn unknown_operations_and_fields_are_refused_by_name() {
 fn set_text_keeps_the_format_of_what_it_replaces() {
     let mut session = blank();
     let slide = session.inspect().slides[0].id;
-    apply(&mut session, &format!(r##"[{{"op": "set_text", "slide": {slide}, "shape": {{"placeholder": "title"}}, "text": "旧"}}, {{"op": "format_text", "slide": {slide}, "shape": {{"placeholder": "title"}}, "format": {{"bold": true, "size": 40, "color": "#C00000"}}}}]"##)).unwrap();
-    apply(&mut session, &format!(r#"{{"op": "set_text", "slide": {slide}, "shape": {{"placeholder": "title"}}, "text": "新しい見出し"}}"#)).unwrap();
+    apply(&mut session, &format!(r##"[{{"op": "set_text", "slide": {slide}, "shape": {{"placeholder": "title"}}, "text": ["旧"]}}, {{"op": "format_text", "slide": {slide}, "shape": {{"placeholder": "title"}}, "format": {{"bold": true, "size": 40, "color": "#C00000"}}}}]"##)).unwrap();
+    apply(&mut session, &format!(r#"{{"op": "set_text", "slide": {slide}, "shape": {{"placeholder": "title"}}, "text": ["新しい見出し"]}}"#)).unwrap();
     let title = session.presentation().slides[0].shapes.iter().find(|s| s.text_body().is_some_and(|b| b.text() == "新しい見出し")).unwrap();
     let run = &title.text_body().unwrap().paragraphs[0].runs[0];
     assert_eq!((run.style.bold, run.style.font_size, run.style.color), (Some(true), Some(4000), Some(ibis_doc_model::drawing::Rgb(0xC00000))));
-    assert_eq!(session.inspect().slides[0].shapes.iter().find(|s| s.text.as_deref() == Some("新しい見出し")).unwrap().font_size, Some(40.0));
+    assert_eq!(session.inspect().slides[0].shapes.iter().find(|s| s.text == Some(paragraphs(&["新しい見出し"]))).unwrap().font_size, Some(40.0));
 }
 
 /// Replace text goes through shapes and table cells of every slide, and says how many it replaced; none found is an
@@ -125,16 +166,16 @@ fn replace_text_in_shapes_and_cells() {
     apply(
         &mut session,
         &format!(
-            r#"[{{"op": "set_text", "slide": {slide}, "shape": {{"placeholder": "title"}}, "text": "A社の提案 A社"}},
-                {{"op": "add_table", "slide": {slide}, "rows": [["A社", "B社"]]}}]"#
+            r#"[{{"op": "set_text", "slide": {slide}, "shape": {{"placeholder": "title"}}, "text": ["A社の提案 A社"]}},
+                {{"op": "add_table", "slide": {slide}, "rows": [[["A社"], ["B社"]]]}}]"#
         ),
     )
     .unwrap();
     let created = apply(&mut session, r#"{"op": "replace_text", "find": "A社", "replace": "イビス"}"#).unwrap();
     assert_eq!(created[0].replaced, Some(3));
     let doc = session.inspect();
-    assert!(doc.slides[0].shapes.iter().any(|s| s.text.as_deref() == Some("イビスの提案 イビス")));
-    assert_eq!(doc.slides[0].shapes.iter().find(|s| s.kind == "table").unwrap().cells.as_ref().unwrap()[0], ["イビス", "B社"]);
+    assert!(doc.slides[0].shapes.iter().any(|s| s.text == Some(paragraphs(&["イビスの提案 イビス"]))));
+    assert_eq!(doc.slides[0].shapes.iter().find(|s| s.kind == "table").unwrap().cells.as_ref().unwrap()[0], [paragraphs(&["イビス"]), paragraphs(&["B社"])]);
     let err = apply(&mut session, r#"{"op": "replace_text", "find": "A社", "replace": "x"}"#).unwrap_err();
     assert!(err.message.contains("not in the text"), "{err}");
 }
@@ -148,8 +189,8 @@ fn slide_and_shape_operations_save() {
         &mut session,
         &format!(
             r##"[{{"op": "add_slide", "layout": "白紙", "as": "b"}},
-                {{"op": "add_shape", "slide": "b", "geometry": "roundRect", "frame": {{"x": 100, "y": 100, "w": 200, "h": 80}}, "fill": "#FFC000", "text": "要点", "as": "box"}},
-                {{"op": "add_text_box", "slide": "b", "frame": {{"x": 100, "y": 300, "w": 400, "h": 40}}, "text": "注記", "format": {{"italic": true}}}},
+                {{"op": "add_shape", "slide": "b", "geometry": "roundRect", "frame": {{"x": 100, "y": 100, "w": 200, "h": 80}}, "fill": "#FFC000", "text": ["要点"], "as": "box"}},
+                {{"op": "add_text_box", "slide": "b", "frame": {{"x": 100, "y": 300, "w": 400, "h": 40}}, "text": ["注記", "補足"], "format": {{"italic": true}}}},
                 {{"op": "set_frame", "slide": "b", "shape": "box", "x": 120, "w": 240}},
                 {{"op": "set_line", "slide": "b", "shape": "box", "color": "#000000", "width": 2}},
                 {{"op": "duplicate_slide", "slide": {first}, "as": "copy"}},
@@ -171,7 +212,7 @@ fn slide_and_shape_operations_save() {
     let reread = again.inspect();
     assert_eq!(reread.slides.len(), 3);
     let texts: Vec<_> = reread.slides[0].shapes.iter().filter_map(|s| s.text.clone()).collect();
-    assert_eq!(texts, ["要点", "注記"]);
+    assert_eq!(texts, [paragraphs(&["要点"]), paragraphs(&["注記", "補足"])]);
 
     let delete = format!(r#"[{{"op": "delete_shape", "slide": {}, "shape": {}}}, {{"op": "delete_slide", "slide": {first}}}]"#, created[0].slide.unwrap(), created[1].shape.unwrap());
     apply(&mut session, &delete).unwrap();
@@ -183,10 +224,13 @@ fn slide_and_shape_operations_save() {
 fn table_rows_are_inserted_and_deleted() {
     let mut session = blank();
     let slide = session.inspect().slides[0].id;
-    let created = apply(&mut session, &format!(r#"{{"op": "add_table", "slide": {slide}, "rows": [["a", "b"], ["c", "d"]]}}"#)).unwrap();
+    let created = apply(&mut session, &format!(r#"{{"op": "add_table", "slide": {slide}, "rows": [[["a"], ["b"]], [["c"], ["d"]]]}}"#)).unwrap();
     let table = created[0].shape.unwrap();
-    apply(&mut session, &format!(r#"[{{"op": "insert_table_row", "slide": {slide}, "shape": {table}, "at": 1}}, {{"op": "set_cell", "slide": {slide}, "shape": {table}, "row": 1, "column": 0, "text": "new"}}]"#)).unwrap();
-    let cells = |s: &Session| s.inspect().slides[0].shapes.iter().find(|s| s.kind == "table").unwrap().cells.clone().unwrap();
+    apply(&mut session, &format!(r#"[{{"op": "insert_table_row", "slide": {slide}, "shape": {table}, "at": 1}}, {{"op": "set_cell", "slide": {slide}, "shape": {table}, "row": 1, "column": 0, "text": ["new"]}}]"#)).unwrap();
+    let cells = |s: &Session| -> Vec<Vec<String>> {
+        let cells = s.inspect().slides[0].shapes.iter().find(|s| s.kind == "table").unwrap().cells.clone().unwrap();
+        cells.into_iter().map(|row| row.into_iter().map(|cell| cell.join("|")).collect()).collect()
+    };
     assert_eq!(cells(&session), vec![vec!["a", "b"], vec!["new", ""], vec!["c", "d"]]);
     apply(&mut session, &format!(r#"{{"op": "delete_table_row", "slide": {slide}, "shape": {table}, "at": 0}}"#)).unwrap();
     assert_eq!(cells(&session), vec![vec!["new", ""], vec!["c", "d"]]);
@@ -214,7 +258,7 @@ fn a_change_the_file_cannot_save_is_refused() {
     let first = before[0].id.0;
     for json in [
         r##"[{"op": "add_slide", "as": "n"}, {"op": "set_background", "slide": "n", "color": "#000000"}]"##.to_string(),
-        format!(r#"{{"op": "set_notes", "slide": {first}, "text": "x"}}"#),
+        format!(r#"{{"op": "set_notes", "slide": {first}, "text": ["x"]}}"#),
     ] {
         let err = apply(&mut session, &json).unwrap_err();
         assert_eq!(err.index, None);
@@ -230,9 +274,9 @@ fn bad_values_are_refused_with_what_is_wrong() {
     for (json, wanted) in [
         (format!(r#"{{"op": "set_background", "slide": {slide}, "color": "red"}}"#), "not a colour"),
         (format!(r#"{{"op": "add_shape", "slide": {slide}, "geometry": "blob", "frame": {{"x": 0, "y": 0, "w": 1, "h": 1}}}}"#), "no preset shape"),
-        (format!(r#"{{"op": "add_text_box", "slide": {slide}, "frame": {{"x": 0, "y": 0, "w": 0, "h": 1}}, "text": "x"}}"#), "width and a height"),
+        (format!(r#"{{"op": "add_text_box", "slide": {slide}, "frame": {{"x": 0, "y": 0, "w": 0, "h": 1}}, "text": ["x"]}}"#), "width and a height"),
         (r#"{"op": "add_slide", "layout": "無い"}"#.to_string(), "no layout named"),
-        (format!(r#"{{"op": "set_text", "slide": {slide}, "shape": {{"placeholder": "pic"}}, "text": "x"}}"#), "no pic placeholder"),
+        (format!(r#"{{"op": "set_text", "slide": {slide}, "shape": {{"placeholder": "pic"}}, "text": ["x"]}}"#), "no pic placeholder"),
     ] {
         let err = apply(&mut session, &json).unwrap_err();
         assert!(err.message.contains(wanted), "{json}: {err}");

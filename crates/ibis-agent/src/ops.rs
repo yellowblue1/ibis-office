@@ -27,6 +27,29 @@ pub enum Ref {
     Placeholder { placeholder: String },
 }
 
+/// Text as its paragraphs, in order: the same shape [`crate::inspect`] gives it in. A paragraph holds no line break, so
+/// where one paragraph ends is never a character the agent has to write.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(try_from = "Vec<String>")]
+pub struct Text(String);
+
+impl TryFrom<Vec<String>> for Text {
+    type Error = String;
+
+    fn try_from(paragraphs: Vec<String>) -> Result<Self, String> {
+        if let Some(i) = paragraphs.iter().position(|p| p.contains(['\n', '\r', '\u{b}'])) {
+            return Err(format!("paragraph {i} has a line break: give each paragraph as its own string"));
+        }
+        Ok(Text(paragraphs.join("\n")))
+    }
+}
+
+impl Text {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rect {
@@ -100,12 +123,12 @@ pub enum Op {
         #[serde(rename = "as")]
         name: Option<String>,
     },
-    SetNotes { slide: Ref, text: String },
+    SetNotes { slide: Ref, text: Text },
     SetBackground { slide: Ref, color: String },
     AddTextBox {
         slide: Ref,
         frame: Rect,
-        text: String,
+        text: Text,
         format: Option<TextFormat>,
         #[serde(rename = "as")]
         name: Option<String>,
@@ -117,7 +140,7 @@ pub enum Op {
         frame: Rect,
         fill: Option<String>,
         line: Option<String>,
-        text: Option<String>,
+        text: Option<Text>,
         #[serde(rename = "as")]
         name: Option<String>,
     },
@@ -125,15 +148,15 @@ pub enum Op {
     AddTable {
         slide: Ref,
         frame: Option<Rect>,
-        rows: Vec<Vec<String>>,
+        rows: Vec<Vec<Text>>,
         #[serde(rename = "as")]
         name: Option<String>,
     },
     DeleteShape { slide: Ref, shape: Ref },
     /// Move or resize a shape: what is given is set.
     SetFrame { slide: Ref, shape: Ref, x: Option<f64>, y: Option<f64>, w: Option<f64>, h: Option<f64> },
-    /// Replace a shape's text (paragraphs separated by `\n`), each paragraph keeping the format of the one it replaces.
-    SetText { slide: Ref, shape: Ref, text: String },
+    /// Replace a shape's text, each paragraph keeping the format of the one it replaces.
+    SetText { slide: Ref, shape: Ref, text: Text },
     /// Replace every `find` with `replace`, in the shapes and table cells of `slide` (all slides when not given) or
     /// of `shape` only, keeping the format of the text replaced.
     ReplaceText { find: String, replace: String, slide: Option<Ref>, shape: Option<Ref> },
@@ -153,7 +176,7 @@ pub enum Op {
     /// A shape's outline: `color` and `width` (points; 0.75 when not given), or none (`color` `null`).
     SetLine { slide: Ref, shape: Ref, color: Option<String>, width: Option<f64> },
     /// Replace the text of the cell at `row`, `column` (0-based) of a table.
-    SetCell { slide: Ref, shape: Ref, row: usize, column: usize, text: String },
+    SetCell { slide: Ref, shape: Ref, row: usize, column: usize, text: Text },
     /// A row inserted into a table at `at` (0-based; the end when not given), formatted as the table's style does.
     InsertTableRow { slide: Ref, shape: Ref, at: Option<usize> },
     DeleteTableRow { slide: Ref, shape: Ref, at: usize },
@@ -293,7 +316,7 @@ impl Planner<'_> {
                 let copy = p.duplicate_slide(from, id).ok_or("no such slide")?;
                 Ok((vec![Command::InsertSlide { index, slide: copy }], Created { slide: Some(id.0), ..Default::default() }, name.clone()))
             }
-            Op::SetNotes { slide, text } => none(vec![Command::SetNotes { slide: self.slide(slide)?, notes: text.clone() }]),
+            Op::SetNotes { slide, text } => none(vec![Command::SetNotes { slide: self.slide(slide)?, notes: text.as_str().to_string() }]),
             Op::SetBackground { slide, color } => none(vec![Command::SetBackground { slide: self.slide(slide)?, fill: Fill::Solid(Color::opaque(rgb(color)?)) }]),
             Op::AddTextBox { slide, frame, text, format, name } => {
                 let slide = self.slide(slide)?;
@@ -301,7 +324,7 @@ impl Planner<'_> {
                 let shape = Shape::text_box(id, emu_rect(frame)?, text.as_str());
                 let mut commands = vec![self.insert(slide, shape)];
                 if let Some(format) = format {
-                    let len = text.chars().count();
+                    let len = text.as_str().chars().count();
                     commands.push(Command::SetCharacterFormat { slide, shape: id, start: 0, end: len, format: character_format(format)? });
                 }
                 Ok((commands, Created { slide: Some(slide.0), shape: Some(id.0), ..Default::default() }, name.clone()))
@@ -318,7 +341,7 @@ impl Planner<'_> {
                     None => None,
                 };
                 let mut auto = AutoShape::new(outline, fill, stroke);
-                auto.text = text.as_deref().map(shape_text);
+                auto.text = text.as_ref().map(|t| shape_text(t.as_str()));
                 let id = ShapeId((self.new_id)());
                 let shape = Shape::new(id, emu_rect(frame)?, ShapeKind::Auto(auto));
                 Ok((vec![self.insert(slide, shape)], Created { slide: Some(slide.0), shape: Some(id.0), ..Default::default() }, name.clone()))
@@ -343,7 +366,7 @@ impl Planner<'_> {
                     for (c, text) in line.iter().enumerate() {
                         let cell = &mut table.rows[r].cells[c];
                         let len = cell.text.text().chars().count();
-                        cell.text.splice(0, len, text);
+                        cell.text.splice(0, len, text.as_str());
                     }
                 }
                 let id = ShapeId((self.new_id)());
@@ -366,10 +389,10 @@ impl Planner<'_> {
                 let (slide, id) = self.shape(slide, shape)?;
                 let target = p.slide(slide).and_then(|s| s.shape(id)).expect("resolved");
                 match (&target.kind, target.text_body()) {
-                    (_, Some(body)) => none(vec![Command::SetTextBody { slide, shape: id, body: replaced(body, text) }]),
+                    (_, Some(body)) => none(vec![Command::SetTextBody { slide, shape: id, body: replaced(body, text.as_str()) }]),
                     (ShapeKind::Auto(auto), None) => {
                         let mut auto = auto.clone();
-                        auto.text = Some(shape_text(text));
+                        auto.text = Some(shape_text(text.as_str()));
                         none(vec![Command::SetKind { slide, shape: id, kind: Box::new(ShapeKind::Auto(auto)) }])
                     }
                     _ => Err(format!("shape {} has no text (a table's cells are set with set_cell)", id.0)),
@@ -462,7 +485,7 @@ impl Planner<'_> {
             Op::SetCell { slide, shape, row, column, text } => {
                 let (slide, id) = self.shape(slide, shape)?;
                 let body = self.body(slide, id, Some([*row, *column]))?;
-                none(vec![in_cell(Some([*row, *column]), Command::SetTextBody { slide, shape: id, body: replaced(body, text) })])
+                none(vec![in_cell(Some([*row, *column]), Command::SetTextBody { slide, shape: id, body: replaced(body, text.as_str()) })])
             }
             Op::InsertTableRow { slide, shape, at } => {
                 let (slide, id) = self.shape(slide, shape)?;

@@ -8,6 +8,7 @@
 use ibis_doc_model::drawing::Fill;
 use ibis_doc_model::geometry::EMU_PER_POINT;
 use ibis_doc_model::model::{Presentation, Shape, ShapeKind, Slide};
+use ibis_doc_model::text::TextBody;
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -38,8 +39,9 @@ pub struct SlideInfo {
     pub hidden: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub background: Option<String>,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub notes: String,
+    /// The speaker notes' paragraphs.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
     pub shapes: Vec<ShapeInfo>,
 }
 
@@ -62,15 +64,15 @@ pub struct ShapeInfo {
     pub h: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fill: Option<String>,
-    /// Paragraphs joined by `\n`.
+    /// Its paragraphs, in the shape [`crate::Op`]s take text in.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
+    pub text: Option<Vec<String>>,
     /// The size of the text's first character, in points.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub font_size: Option<f64>,
-    /// A table's cells' text, by row.
+    /// A table's cells' paragraphs, by row.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cells: Option<Vec<Vec<String>>>,
+    pub cells: Option<Vec<Vec<Vec<String>>>>,
 }
 
 pub fn inspect(presentation: &Presentation, name: &str, dirty: bool) -> Inspection {
@@ -90,7 +92,7 @@ fn slide_info(presentation: &Presentation, slide: &Slide, number: usize) -> Slid
         layout: slide.layout.and_then(|l| presentation.layout(l)).map(|l| l.name.clone()),
         hidden: slide.hidden,
         background: color_of(&slide.background),
-        notes: slide.notes.clone(),
+        notes: if slide.notes.is_empty() { Vec::new() } else { slide.notes.split('\n').map(str::to_string).collect() },
         shapes: slide.shapes.iter().filter(|s| !slide.is_attached(s.id)).map(|s| shape_info(slide, s)).collect(),
     }
 }
@@ -107,7 +109,7 @@ fn shape_info(slide: &Slide, shape: &Shape) -> ShapeInfo {
     };
     let body = shape.text_body();
     let cells = match &shape.kind {
-        ShapeKind::Table(table) => Some(table.rows.iter().map(|row| row.cells.iter().map(|c| c.text.text()).collect()).collect()),
+        ShapeKind::Table(table) => Some(table.rows.iter().map(|row| row.cells.iter().map(|c| paragraphs(&c.text)).collect()).collect()),
         _ => None,
     };
     ShapeInfo {
@@ -121,7 +123,7 @@ fn shape_info(slide: &Slide, shape: &Shape) -> ShapeInfo {
         w: pt(shape.frame.width),
         h: pt(shape.frame.height),
         fill,
-        text: body.map(|b| b.text()),
+        text: body.map(paragraphs),
         font_size: body.and_then(|b| {
             let first = b.paragraphs.first()?;
             let size = first.runs.first().map_or(first.end_style.font_size, |r| r.style.font_size).unwrap_or(b.style.font_size);
@@ -129,6 +131,10 @@ fn shape_info(slide: &Slide, shape: &Shape) -> ShapeInfo {
         }),
         cells,
     }
+}
+
+fn paragraphs(body: &TextBody) -> Vec<String> {
+    body.paragraphs.iter().map(|p| p.text()).collect()
 }
 
 /// EMU in points, to a tenth.

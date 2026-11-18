@@ -29,8 +29,11 @@ A refused request is answered `{ ok: false, error }`, and nothing changed. Once 
 
 `inspect` gives the slide size and the layouts' names, and the slides in order, each with its `id`, `number`, `layout` and its
 shapes: `id`, `kind` (`text_box`, `shape`, `picture`, `line`, `table`, `chart`, `other`), `placeholder` (`ctrTitle`, `title`,
-`body`, `subTitle`…), place and size in points (`x`, `y`, `w`, `h`), `text` (paragraphs joined by `\n`), `font_size`, a table's
-`cells`. `dirty` says whether there are changes not saved.
+`body`, `subTitle`…), place and size in points (`x`, `y`, `w`, `h`), `text`, `font_size`, a table's `cells` (each cell's
+text, by row) and the slide's `notes`. `dirty` says whether there are changes not saved.
+
+Text is its paragraphs: a list of strings, read and given the same way (`["Title", "", "Date"]` is three paragraphs, the
+second empty). A paragraph holds no line break; one is refused.
 
 The ids stay while the document is open. A file read again is numbered again (the same bytes give the same ids).
 
@@ -50,7 +53,7 @@ name of one an earlier operation of the list made; a shape also as `{ "placehold
 | `set_background` | `slide`, `color` |
 | `add_text_box` | `slide`, `frame` `{x, y, w, h}`, `text`, `format?`, `as?` |
 | `add_shape` | `slide`, `geometry` (`rect`, `roundRect`, `ellipse`, `triangle`, `rightArrow`…), `frame`, `fill?`, `line?`, `text?`, `as?` |
-| `add_table` | `slide`, `rows` (the cells' text by row), `frame?`, `as?` |
+| `add_table` | `slide`, `rows` (each cell's text, by row), `frame?`, `as?` |
 | `delete_shape` | `slide`, `shape` |
 | `set_frame` | `slide`, `shape`, `x?`, `y?`, `w?`, `h?` |
 | `set_text` | `slide`, `shape`, `text` (each paragraph keeps the format of the one it replaces) |
