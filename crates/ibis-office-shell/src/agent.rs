@@ -22,6 +22,13 @@ impl SlideEditor {
         Ok(serde_json::to_string(&ibis_agent::inspect(self.presentation(), name, self.document.is_dirty())).expect("serialisable"))
     }
 
+    /// Whether there are changes not saved, and a count that changes with every edit, undo and redo, in JSON: cheap, for
+    /// the embedding page to save the person's edits once they stop.
+    pub fn agent_state(&self) -> Result<String, String> {
+        self.agent_source()?;
+        Ok(serde_json::json!({ "dirty": self.document.is_dirty(), "revision": self.document.revision() }).to_string())
+    }
+
     /// Apply the operations of `ops` (JSON) as one edit, and show the slide they worked on. Answers what each made and
     /// the document after, in JSON; nothing changes when they are refused.
     pub fn agent_apply(&mut self, ops: &str, window: &mut Window, cx: &mut Context<Self>) -> Result<String, String> {
@@ -51,10 +58,11 @@ impl SlideEditor {
         Ok(serde_json::json!({ "created": planned.created, "document": document }).to_string())
     }
 
-    /// The file as it is now (what is being typed entered first), its name, and the document marked saved.
-    pub fn agent_save(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Result<(String, Vec<u8>), String> {
+    /// The file as it is now, its name, and the document marked saved. What the person is typing is in the model as it is
+    /// typed, so the save does not end their typing (the embedding page saves while they work); only text still being
+    /// composed with an input method is left out.
+    pub fn agent_save(&mut self, cx: &mut Context<Self>) -> Result<(String, Vec<u8>), String> {
         let source = self.agent_source()?;
-        self.commit_pending_edit(window, cx);
         if let Some(why) = with_format!(self, save_refused(self)) {
             return Err(why);
         }

@@ -16,7 +16,8 @@ The editor answers only its parent window, at the origin given explicitly with `
 | --- | --- |
 | `{ source: 'ibisoffice-agent', id, method: 'inspect' }` | `{ source: 'ibisoffice-agent', id, ok: true, result }`: the document as JSON text |
 | `{ source: 'ibisoffice-agent', id, method: 'apply', params: [operations] }` | `result`: `{ created, document }` as JSON text |
-| `{ source: 'ibisoffice-agent', id, method: 'save' }` | `result`: the file's bytes (an `ArrayBuffer`, transferred); the document is then saved (not dirty) |
+| `{ source: 'ibisoffice-agent', id, method: 'state' }` | `result`: `{ dirty, revision }` as JSON text; `revision` changes with every edit, undo and redo (cheap: for saving once the person stops) |
+| `{ source: 'ibisoffice-agent', id, method: 'save' }` | `result`: the file's bytes (an `ArrayBuffer`, transferred); the document is then saved (not dirty). What the person is typing is saved as typed and their typing goes on |
 
 A refused request is answered `{ ok: false, error }`, and nothing changed. Once the document is open the editor posts
 `{ source: 'ibisoffice-agent', type: 'ready' }`.
@@ -71,3 +72,7 @@ ibis-agent apply deck.pptx ops.json -o out.pptx   # `-` reads the operations fro
 ```
 
 `apply` prints `{ "replaced": n, "document": … }` of the file written, or `{ "error": … }` and exits with 1, writing nothing.
+
+`scripts/build-agent-wasm.sh` builds the same for a JavaScript runtime (wasm-bindgen's `nodejs` target, in
+`target/agent-wasm/`): `new_presentation()`, `inspect(bytes, name)` and `apply(bytes, name, ops)` (the file written and how
+many places were `replaced`; a refusal throws the error as JSON).

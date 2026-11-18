@@ -785,7 +785,13 @@ mod web {
     /// The file as it is now (the document is marked saved).
     #[wasm_bindgen]
     pub fn agent_save() -> Result<Vec<u8>, JsValue> {
-        with_editor(|editor, window, cx| editor.agent_save(window, cx).map(|(_, bytes)| bytes))
+        with_editor(|editor, _, cx| editor.agent_save(cx).map(|(_, bytes)| bytes))
+    }
+
+    /// `{dirty, revision}` in JSON: whether there are changes not saved, and a number every edit, undo and redo changes.
+    #[wasm_bindgen]
+    pub fn agent_state() -> Result<String, JsValue> {
+        with_editor(|editor, _, _| editor.agent_state())
     }
 }
 

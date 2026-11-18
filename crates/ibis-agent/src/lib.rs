@@ -14,6 +14,8 @@
 
 mod inspect;
 mod ops;
+#[cfg(target_family = "wasm")]
+mod wasm;
 
 use std::sync::Arc;
 

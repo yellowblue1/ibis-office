@@ -69,6 +69,21 @@ fn a_slide_made_and_filled_is_one_undo_and_saves() {
     assert!(!session.document.can_undo());
 }
 
+/// The document's revision changes with an edit, its undo and an edit after it, where the undo stack's length does not.
+#[test]
+fn the_revision_tells_every_change() {
+    let mut session = blank();
+    let mut seen = vec![session.document.revision()];
+    apply(&mut session, r#"{"op": "add_slide"}"#).unwrap();
+    seen.push(session.document.revision());
+    session.document.undo();
+    seen.push(session.document.revision());
+    apply(&mut session, r#"{"op": "add_slide"}"#).unwrap();
+    seen.push(session.document.revision());
+    let distinct: std::collections::HashSet<_> = seen.iter().collect();
+    assert_eq!(distinct.len(), seen.len(), "{seen:?}");
+}
+
 /// An operation that fails refuses the whole list: what the ones before it did is not applied either.
 #[test]
 fn a_failing_operation_changes_nothing() {

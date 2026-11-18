@@ -2,7 +2,7 @@
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 // Boots the wasm editor. `pkg/` is produced by scripts/build-web.sh.
-import init, { agent_apply, agent_inspect, agent_save, run, set_embed_options } from './pkg/ibis_office_app.js';
+import init, { agent_apply, agent_inspect, agent_save, agent_state, run, set_embed_options } from './pkg/ibis_office_app.js';
 
 /** A file chosen by the user or loaded at startup. */
 interface PickedFile {
@@ -481,7 +481,7 @@ window.ibisOfficeEmbedAction = embedAction;
 interface AgentRequest {
   source: 'ibisoffice-agent';
   id: string | number;
-  method: 'inspect' | 'apply' | 'save';
+  method: 'inspect' | 'apply' | 'save' | 'state';
   /** For `apply`: the operations (an array, or its JSON). */
   params?: unknown;
 }
@@ -495,8 +495,8 @@ function isAgentRequest(data: unknown): data is AgentRequest {
  * The document's edits by the embedding page's AI agent: the parent window, at the origin given explicitly
  * (`?origin=` or `ibisOfficeOptions.targetOrigin`; not the referrer's, and not `'*'`), sends
  * `{ source: 'ibisoffice-agent', id, method, params }` and is answered `{ source: 'ibisoffice-agent', id, ok, result | error }`:
- * `inspect` (the document with ids, JSON), `apply` (`params`: the operations; `{created, document}`, JSON) and `save` (the
- * file's bytes, transferred). Told `{ source: 'ibisoffice-agent', type: 'ready' }` once the document is open.
+ * `inspect` (the document with ids, JSON), `apply` (`params`: the operations; `{created, document}`, JSON), `state`
+ * (`{dirty, revision}`, JSON) and `save` (the file's bytes, transferred). Told `{ source: 'ibisoffice-agent', type: 'ready' }` once the document is open.
  */
 function listenToAgent(): void {
   const origin = embedOptions().targetOrigin;
@@ -514,6 +514,9 @@ function listenToAgent(): void {
       switch (method) {
         case 'inspect':
           reply({ ok: true, result: agent_inspect() });
+          return;
+        case 'state':
+          reply({ ok: true, result: agent_state() });
           return;
         case 'apply':
           reply({ ok: true, result: agent_apply(typeof params === 'string' ? params : JSON.stringify(params ?? [])) });
