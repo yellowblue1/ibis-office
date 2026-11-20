@@ -1,0 +1,62 @@
+name: Linux app for YBA (x86_64, aarch64)
+
+# The Linux app YBA's server draws slides with (`ibisOffice --export png`): the AppImage's AppDir
+# (usr/), zipped, for each architecture the server image is built for. Built on push to its branch.
+on:
+  push:
+    branches: [yba/linux-app]
+
+permissions:
+  contents: read
+
+jobs:
+  app:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ubuntu:20.04
+      env:
+        DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Install system build dependencies
+        timeout-minutes: 10
+        run: |
+          apt-get update
+          apt-get install -y ca-certificates curl git python3 build-essential pkg-config zip \
+            libfontconfig1-dev libfreetype-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        timeout-minutes: 10
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Build the app
+        timeout-minutes: 90
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          scripts/bundle-linux.sh --release
+
+      - name: Zip the AppDir
+        run: |
+          cd target/dist/linux/AppDir
+          zip -qry "$GITHUB_WORKSPACE/ibisOffice-yba-linux-${{ matrix.arch }}.zip" usr
+          cd "$GITHUB_WORKSPACE"
+          sha256sum "ibisOffice-yba-linux-${{ matrix.arch }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ibisOffice-yba-linux-${{ matrix.arch }}
+          path: ibisOffice-yba-linux-${{ matrix.arch }}.zip
+          if-no-files-found: error
