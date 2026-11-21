@@ -1,7 +1,7 @@
 name: Linux app for YBA (x86_64, aarch64)
 
-# The Linux app YBA's server draws slides with (`ibisOffice --export png`): the AppImage's AppDir
-# (usr/), zipped, for each architecture the server image is built for. Built on push to its branch.
+# The Linux app YBA's server draws slides with (`ibisOffice --export png`) and edits a file nobody
+# has open with (`ibis-agent`): the AppImage's AppDir (usr/), zipped, for each architecture the server image is built for. Built on push to its branch.
 on:
   push:
     branches: [yba/linux-app]
