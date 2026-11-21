@@ -3,11 +3,12 @@
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! An agent's edits on a file, with no window:
 //!
-//!   ibis-agent inspect <file.pptx>
+//!   ibis-agent inspect <file.pptx> [--name <name>]
 //!   ibis-agent apply <file.pptx> <ops.json | -> [-o <out.pptx>]
 //!   ibis-agent new <out.pptx>
 //!
-//! `inspect` prints the summary the browser version's `inspect` gives. `apply` applies the operations (a JSON array; `-`
+//! `inspect` prints the summary the browser version's `inspect` gives, naming the file `<name>` when given (a server keeps a
+//! file under a name of its own). `apply` applies the operations (a JSON array; `-`
 //! reads it from standard input) as one step and writes the file (over itself without `-o`), then prints
 //! `{"replaced": n, "document": <inspect of the file written>}`; when they are refused it writes nothing, prints `{"error": …}` and exits
 //! with 1. `new` writes an empty presentation (one title slide).
@@ -32,8 +33,13 @@ fn main() -> ExitCode {
 fn run(args: &[String]) -> Result<serde_json::Value, serde_json::Value> {
     let text = |e: String| serde_json::Value::String(e);
     match args {
-        [cmd, file] if cmd == "inspect" => {
-            let session = open(file).map_err(text)?;
+        [cmd, file, rest @ ..] if cmd == "inspect" => {
+            let mut session = open(file).map_err(text)?;
+            match rest {
+                [] => {}
+                [flag, name] if flag == "--name" => session.name = name.clone(),
+                _ => return Err(text(usage())),
+            }
             Ok(serde_json::to_value(session.inspect()).expect("serialisable"))
         }
         [cmd, out] if cmd == "new" => {
@@ -76,5 +82,5 @@ fn open(path: &str) -> Result<ibis_agent::Session, String> {
 }
 
 fn usage() -> String {
-    "usage: ibis-agent inspect <file.pptx> | apply <file.pptx> <ops.json|-> [-o <out.pptx>] | new <out.pptx>".into()
+    "usage: ibis-agent inspect <file.pptx> [--name <name>] | apply <file.pptx> <ops.json|-> [-o <out.pptx>] | new <out.pptx>".into()
 }
