@@ -48,7 +48,7 @@ fi
 # The wasm's size, for the download's progress bar: a server that compresses
 # it (GitHub Pages sends gzip) gives Content-Length of the compressed bytes,
 # while the browser hands main.ts the uncompressed ones.
-stat -f %z www/pkg/ibis_office_app_bg.wasm > www/pkg/ibis_office_app_bg.wasm.size
+wc -c < www/pkg/ibis_office_app_bg.wasm | tr -d ' ' > www/pkg/ibis_office_app_bg.wasm.size
 
 # main.ts imports the typings wasm-bindgen just wrote.
 if [[ ! -x node_modules/.bin/tsc ]]; then

@@ -2,7 +2,7 @@
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 // Boots the wasm editor. `pkg/` is produced by scripts/build-web.sh.
-import init, { run, set_embed_options } from './pkg/ibis_office_app.js';
+import init, { agent_apply, agent_inspect, agent_save, agent_state, run, set_embed_options } from './pkg/ibis_office_app.js';
 
 /** A file chosen by the user or loaded at startup. */
 interface PickedFile {
@@ -330,6 +330,30 @@ function localFile(): Promise<PickedFile | null> {
   });
 }
 
+/**
+ * `?open=message`: the parent window hands the document over, for a page that holds it behind its own credentials. Asked
+ * with `{ source: 'ibisoffice-agent', type: 'need-file' }` and answered `{ source: 'ibisoffice-agent', type: 'file', name, bytes }`,
+ * from the origin given explicitly (`?origin=`), as the agent's requests are.
+ */
+function fileFromParent(): Promise<PickedFile | null> {
+  const origin = embedOptions().targetOrigin;
+  if (window.parent === window || !origin || origin === '*') {
+    return Promise.reject(new Error('?open=message needs a parent window and ?origin='));
+  }
+  return new Promise((resolve) => {
+    const listener = (event: MessageEvent) => {
+      const data = event.data as { source?: string; type?: string; name?: unknown; bytes?: unknown } | null;
+      if (event.source !== window.parent || event.origin !== origin || data?.source !== 'ibisoffice-agent' || data.type !== 'file') {
+        return;
+      }
+      window.removeEventListener('message', listener);
+      resolve(data.bytes instanceof ArrayBuffer && typeof data.name === 'string' ? { name: data.name, bytes: new Uint8Array(data.bytes) } : null);
+    };
+    window.addEventListener('message', listener);
+    window.parent.postMessage({ source: 'ibisoffice-agent', type: 'need-file' }, origin);
+  });
+}
+
 /** The document named by `?open=<url>`, fetched from this site, or the one the playground page picked. */
 async function initialFile(): Promise<PickedFile | null> {
   if (new URLSearchParams(location.search).has('local')) {
@@ -338,6 +362,9 @@ async function initialFile(): Promise<PickedFile | null> {
   const url = new URLSearchParams(location.search).get('open');
   if (!url) {
     return null;
+  }
+  if (url === 'message') {
+    return fileFromParent();
   }
   const response = await fetch(url);
   if (!response.ok) {
@@ -409,7 +436,7 @@ async function fetchWasm(): Promise<Response> {
   }
   progress?.classList.add('starting');
   if (statusText) {
-    statusText.textContent = ja ? 'ibisOffice を起動しています…' : 'Starting ibisOffice…';
+    statusText.textContent = ja ? '起動しています…' : 'Starting…';
   }
   // Let the browser paint the full bar and the new text before the page
   // gets busy compiling and starting the app.
@@ -450,23 +477,78 @@ window.ibisOfficeFontDownload = fontDownload;
 window.ibisOfficeFontsLoad = fontsLoad;
 window.ibisOfficeEmbedAction = embedAction;
 
-if (!('gpu' in navigator)) {
-  showStatus(ja
-    ? 'このブラウザは WebGPU に対応していません。最新の Chrome、Edge、Safari をお使いください。'
-    : 'This browser does not support WebGPU. Please use the latest Chrome, Edge or Safari.');
-} else {
-  try {
-    const [, file] = await Promise.all([init({ module_or_path: fetchWasm() }), initialFile()]);
-    // Icons load from <base>/assets/icons/*.svg, next to this page (the site
-    // may live under a path, as on GitHub Pages). The base must be absolute:
-    // the icon loader fetches with reqwest, which rejects relative URLs.
-    const base = new URL('.', location.href).href.replace(/\/$/, '');
-    const embed = embedOptions();
-    set_embed_options(embed.close, embed.download, embed.view, embed.menuBar, embed.toolBar);
-    await run(base, file?.name, file?.bytes);
-    status?.remove();
-  } catch (error) {
-    console.error(error);
-    showStatus(ja ? `起動できませんでした: ${error}` : `Could not start: ${error}`);
+/** A request of the embedding page's agent (`{ source: 'ibisoffice-agent', id, method, params }`). */
+interface AgentRequest {
+  source: 'ibisoffice-agent';
+  id: string | number;
+  method: 'inspect' | 'apply' | 'save' | 'state';
+  /** For `apply`: the operations (an array, or its JSON). */
+  params?: unknown;
+}
+
+function isAgentRequest(data: unknown): data is AgentRequest {
+  const d = data as Partial<AgentRequest> | null;
+  return typeof d === 'object' && d !== null && d.source === 'ibisoffice-agent' && (typeof d.id === 'string' || typeof d.id === 'number') && typeof d.method === 'string';
+}
+
+/**
+ * The document's edits by the embedding page's AI agent: the parent window, at the origin given explicitly
+ * (`?origin=` or `ibisOfficeOptions.targetOrigin`; not the referrer's, and not `'*'`), sends
+ * `{ source: 'ibisoffice-agent', id, method, params }` and is answered `{ source: 'ibisoffice-agent', id, ok, result | error }`:
+ * `inspect` (the document with ids, JSON), `apply` (`params`: the operations; `{created, document}`, JSON), `state`
+ * (`{dirty, revision}`, JSON) and `save` (the file's bytes, transferred). Told `{ source: 'ibisoffice-agent', type: 'ready' }` once the document is open.
+ */
+function listenToAgent(): void {
+  const origin = embedOptions().targetOrigin;
+  if (window.parent === window || !origin || origin === '*') {
+    return;
   }
+  window.addEventListener('message', (event: MessageEvent) => {
+    if (event.source !== window.parent || event.origin !== origin || !isAgentRequest(event.data)) {
+      return;
+    }
+    const { id, method, params } = event.data;
+    const reply = (answer: Record<string, unknown>, transfer: Transferable[] = []) =>
+      window.parent.postMessage({ source: 'ibisoffice-agent', id, ...answer }, origin, transfer);
+    try {
+      switch (method) {
+        case 'inspect':
+          reply({ ok: true, result: agent_inspect() });
+          return;
+        case 'state':
+          reply({ ok: true, result: agent_state() });
+          return;
+        case 'apply':
+          reply({ ok: true, result: agent_apply(typeof params === 'string' ? params : JSON.stringify(params ?? [])) });
+          return;
+        case 'save': {
+          const bytes = agent_save().slice().buffer;
+          reply({ ok: true, result: bytes }, [bytes]);
+          return;
+        }
+        default:
+          reply({ ok: false, error: `unknown method ${String(method)}` });
+      }
+    } catch (error) {
+      reply({ ok: false, error: String(error) });
+    }
+  });
+  window.parent.postMessage({ source: 'ibisoffice-agent', type: 'ready' }, origin);
+}
+
+// Drawn with WebGPU, or WebGL2 where the browser has no WebGPU (forks/gpui-pre-web chooses).
+try {
+  const [, file] = await Promise.all([init({ module_or_path: fetchWasm() }), initialFile()]);
+  // Icons load from <base>/assets/icons/*.svg, next to this page (the site
+  // may live under a path, as on GitHub Pages). The base must be absolute:
+  // the icon loader fetches with reqwest, which rejects relative URLs.
+  const base = new URL('.', location.href).href.replace(/\/$/, '');
+  const embed = embedOptions();
+  set_embed_options(embed.close, embed.download, embed.view, embed.menuBar, embed.toolBar);
+  await run(base, file?.name, file?.bytes);
+  status?.remove();
+  listenToAgent();
+} catch (error) {
+  console.error(error);
+  showStatus(ja ? `起動できませんでした: ${error}` : `Could not start: ${error}`);
 }

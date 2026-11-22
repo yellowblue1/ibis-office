@@ -25,7 +25,7 @@
     </style>
   </head>
   <body>
-    <div id="status"><span id="status-text">Loading ibisOffice…</span><div id="progress"><div></div></div></div>
+    <div id="status"><span id="status-text">Loading…</span><div id="progress"><div></div></div></div>
     <script>
       // The same language as the playground page's menu, else the browser's.
       (() => {
@@ -33,7 +33,7 @@
         try { lang = localStorage.getItem('ibisoffice-lang'); } catch { /* storage blocked */ }
         if ((lang ?? navigator.language).toLowerCase().startsWith('ja')) {
           document.documentElement.lang = 'ja';
-          document.getElementById('status-text').textContent = 'ibisOffice を読み込んでいます…';
+          document.getElementById('status-text').textContent = '読み込んでいます…';
         }
       })();
     </script>
