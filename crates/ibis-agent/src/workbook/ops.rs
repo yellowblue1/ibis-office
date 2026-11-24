@@ -18,10 +18,10 @@ use ibis_doc_model::command::{Command, EditError};
 use ibis_doc_model::geometry::EMU_PER_POINT;
 use ibis_doc_model::model::{Presentation, ShapeId, SlideId};
 use ibis_doc_model::sheet::{CellAlign, CellRange, CellValue, Sheet, Workbook, cell_name, referenced_cell, replace_ignoring_case};
-use ibis_doc_model::sheet_calc::{BookView, sheet_of_slide};
+use ibis_doc_model::sheet_calc::sheet_of_slide;
 use ibis_doc_model::sheet_command::{Axis, CellEdit, CellInput, SheetCommand, StyleChange};
 use ibis_doc_model::sheet_ops::valid_sheet_name;
-use ibis_doc_model::sheet_validation::{Breach, breach, list_items, rule_at};
+use ibis_doc_model::sheet_validation::{Breach, breach, formula_value, list_items, rule_at};
 use ibis_doc_model::Document;
 use ibis_pptx::Source;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -416,21 +416,17 @@ impl Planner<'_> {
         let value = match input {
             CellInput::Value(v) => v.clone(),
             CellInput::Clear => CellValue::Empty,
-            CellInput::Formula(f) => {
-                let view = BookView::new(self.p);
-                let Some(index) = view.index_of_slide(slide) else { return Ok(()) };
-                match ibis_calc::recalc::evaluate(&view, (index, row, column), f) {
-                    (_, true) => return Ok(()),
-                    (value, false) => value,
-                }
-            }
+            CellInput::Formula(f) => match formula_value(self.p, slide, row, column, f) {
+                Some(value) => value,
+                None => return Ok(()),
+            },
         };
         let Some((how, title, text)) = breach(self.p, slide, row, column, &value) else { return Ok(()) };
         if how == Breach::Information {
             return Ok(());
         }
         let mut message = "the value breaks the cell's data validation".to_string();
-        if rule.kind == "list" {
+        if how == Breach::NotListed {
             let items = list_items(self.p, slide, rule, row, column);
             message += &format!(" (one of: {})", items.iter().take(20).map(|i| format!("{i:?}")).collect::<Vec<_>>().join(", "));
         }

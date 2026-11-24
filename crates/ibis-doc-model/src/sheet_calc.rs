@@ -98,6 +98,11 @@ impl<'a> BookView<'a> {
         self.sheets.get(index).and_then(|s| s.slide)
     }
 
+    /// The book's sheet at `index`, shown or hidden.
+    pub fn sheet(&self, index: usize) -> Option<&'a Sheet> {
+        self.sheets.get(index).and_then(|s| s.sheet)
+    }
+
     /// Every formula cell of the workbook.
     pub fn formula_cells(&self) -> Vec<CellId> {
         let mut out = Vec::new();

@@ -28368,7 +28368,7 @@ fn cf019_validation015_audit005_context_menus_and_quick_actions() {
     // 離れている I5 (col=8, row=4) の入力規則も上限 200 に一括更新されていることを確認
     let i5_max = s.with(|e, _| {
         let (_, sheet) = e.current_sheet().unwrap();
-        crate::validation::rule_at(sheet, 4, 8).and_then(|v| v.formula2.clone())
+        ibis_doc_model::sheet_validation::rule_at(sheet, 4, 8).and_then(|v| v.formula2.clone())
     });
     assert_eq!(i5_max.as_deref(), Some("200"));
 
@@ -28480,7 +28480,7 @@ fn cf019_validation015_audit005_context_menus_and_quick_actions() {
     assert_eq!(st.color, Some(ibis_doc_model::Rgb(0x9C6500)));
     assert_eq!(st.bold, Some(true));
     assert_eq!(st.italic, Some(true));
-    assert_eq!(crate::validation::rule_at(sheet0, 4, 8).and_then(|v| v.formula2.as_deref()), Some("200"));
+    assert_eq!(ibis_doc_model::sheet_validation::rule_at(sheet0, 4, 8).and_then(|v| v.formula2.as_deref()), Some("200"));
     assert_eq!(sheet0.cell(2, 9).unwrap().value, CellValue::Number(20.0));
 }
 
