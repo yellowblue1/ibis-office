@@ -740,7 +740,11 @@ mod web {
                 asset_base.unwrap_or_default(),
             ));
 
-        let handle = app.run_embedded(|cx| {
+        // The platform opens the editor only once the browser's graphics are set up, after `run_embedded` returns; `run`
+        // resolves when the editor is open and has drawn once (the page then tells its parent `ready`, and requests such as
+        // `show` need the view's size). Graphics that fail drop the closure, and with it the sender.
+        let (drawn, first_frame) = futures::channel::oneshot::channel::<()>();
+        let handle = app.run_embedded(move |cx| {
             cx.text_system()
                 .add_fonts(vec![Cow::Borrowed(UI_FONT)])
                 .expect("failed to load the UI font");
@@ -756,9 +760,18 @@ mod web {
             }
             // The fonts that can be downloaded, asked about at the first start of a version (セットアップ).
             crate::shell::font_setup_dialog::start(cx);
+            // The callback of the next frame runs before that frame is drawn: the one after it, once it has been.
+            let Some(window) = cx.windows().first().copied() else { return drop(drawn.send(())) };
+            let _ = window.update(cx, move |_, window, _| {
+                window.on_next_frame(move |window, _| {
+                    window.on_next_frame(move |_, _| drop(drawn.send(())));
+                    window.refresh();
+                });
+                window.refresh();
+            });
         });
         APPLICATION.with(|app| *app.borrow_mut() = Some(handle));
-        Ok(())
+        first_frame.await.map_err(|_| JsValue::from_str("the browser could not draw the editor"))
     }
 
     /// The agent's edits on the page's document (`shell::agent`), for `www/main.ts`'s `ibisoffice-agent` messages.

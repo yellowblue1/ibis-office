@@ -23,8 +23,8 @@ The editor answers only its parent window, at the origin given explicitly with `
 | `{ source: 'ibisoffice-agent', id, method: 'show', params: { top?, at? } }` | `result`: `null`; the place is shown (see [Two editors side by side](#two-editors-side-by-side)) |
 
 A refused request is answered `{ ok: false, error }`, and nothing changed. An `apply` of an empty list is done, changing
-nothing. Once the document is open the editor posts
-`{ source: 'ibisoffice-agent', type: 'ready' }`.
+nothing. Once the document is open and drawn the editor posts
+`{ source: 'ibisoffice-agent', type: 'ready' }`; every request is answered from then on.
 
 `?open=message` takes the document from the parent instead of a URL: the editor posts `{ source: 'ibisoffice-agent', type:
 'need-file' }`, and the parent answers `{ source: 'ibisoffice-agent', type: 'file', name, bytes }` (`bytes` an `ArrayBuffer`).
