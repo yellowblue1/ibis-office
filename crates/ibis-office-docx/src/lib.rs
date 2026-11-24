@@ -773,9 +773,10 @@ impl FormatEditor for Document {
         Box::new(State { characters, caret, laid_out: presentation.flow.clone(), read_mode, ..State::default() })
     }
 
-    /// At 141% by default (#154).
+    /// At 141% by default (#154); fitted to the page width (`None`, as ページ幅 keeps it fitted when the window is
+    /// resized) in a page embedded in another, whose pane is too narrow for a page at 141%.
     fn initial_zoom(_: &SlideEditor) -> Option<f32> {
-        Some(1.41)
+        (!crate::shell::embed::is_embedded()).then_some(1.41)
     }
 
     fn workspace_content(editor: &SlideEditor, workspace: Size<Pixels>) -> WorkspaceContent {

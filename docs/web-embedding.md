@@ -18,6 +18,7 @@ From the URL of the editor:
 | `view=1` | Open in read-only viewing mode (`0` or `false` turns it off). The menu bar and toolbar remain shown by default even when `view=1`. |
 | `menuBar=0` | Hide the menu bar (shown by default, `menuBar=1`). |
 | `toolBar=0` | Hide the toolbar (shown by default, `toolBar=1`). |
+| `embedded=0` | Behave as a page of its own (by default, in an iframe, the editor is embedded: the first start does not offer the fonts to download, and a Word document opens fitted to the page width). `embedded=1` makes it embedded outside an iframe. |
 | `close=1` | Show the Close button (`0` or `false` turns it off). |
 | `download=1` | Show the Download button. |
 | `origin=https://app.example.com` | The origin that messages to the parent window are sent to (iframe only; see below). |

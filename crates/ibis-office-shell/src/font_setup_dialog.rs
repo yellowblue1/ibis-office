@@ -101,7 +101,7 @@ pub fn start(cx: &mut App) {
         let _ = &cx;
         return;
     }
-    if crate::settings::get(font_setup::CHECKED_KEY).as_deref() == Some(crate::VERSION) {
+    if crate::embed::is_embedded() || crate::settings::get(font_setup::CHECKED_KEY).as_deref() == Some(crate::VERSION) {
         return;
     }
     cx.spawn(async move |cx: &mut AsyncApp| {

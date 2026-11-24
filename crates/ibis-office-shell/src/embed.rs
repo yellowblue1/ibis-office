@@ -38,6 +38,21 @@ pub fn set_embed_options(close: bool, download: bool, view: bool, menu_bar: bool
     SHOW_TOOL_BAR.store(tool_bar, Ordering::Relaxed);
 }
 
+static EMBEDDED: AtomicBool = AtomicBool::new(false);
+
+/// Whether the page is shown inside another page (an iframe; `?embedded=0` or `ibisOfficeOptions.embedded` says
+/// otherwise), often a narrow pane beside the embedding page's own: the first start does not ask about the fonts to
+/// download (セットアップ, still in Help), and a Word document opens fitted to the page width rather than at its 141%.
+/// Called by `www/main.ts` before `run`.
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
+pub fn set_embedded(embedded: bool) {
+    EMBEDDED.store(embedded, Ordering::Relaxed);
+}
+
+pub fn is_embedded() -> bool {
+    EMBEDDED.load(Ordering::Relaxed)
+}
+
 #[allow(dead_code)]
 pub(crate) fn show_close() -> bool {
     CLOSE.load(Ordering::Relaxed)

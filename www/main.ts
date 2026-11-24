@@ -2,7 +2,7 @@
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 // Boots the wasm editor. `pkg/` is produced by scripts/build-web.sh.
-import init, { agent_apply, agent_inspect, agent_save, agent_state, run, set_embed_options } from './pkg/ibis_office_app.js';
+import init, { agent_apply, agent_inspect, agent_save, agent_state, run, set_embed_options, set_embedded } from './pkg/ibis_office_app.js';
 
 /** A file chosen by the user or loaded at startup. */
 interface PickedFile {
@@ -27,6 +27,11 @@ interface EmbedOptions {
   menuBar?: boolean;
   /** Show the toolbar (`?toolBar=1`, `?toolBar=0` hides it). Default: true (including when `view=1`). */
   toolBar?: boolean;
+  /**
+   * Shown inside another page, often a narrow pane beside it (`?embedded=1`, `?embedded=0`): the first start does not
+   * ask about the fonts to download, and a Word document opens fitted to the page width. Default: in an iframe.
+   */
+  embedded?: boolean;
   /**
    * The origin the parent window is sent messages for (`?origin=https://app.example.com`),
    * when the editor is in an iframe. Without it the referrer's origin is used;
@@ -79,6 +84,7 @@ function embedOptions(): Required<Omit<EmbedOptions, 'eventTarget'>> & Pick<Embe
     view,
     menuBar: js.menuBar ?? flag(params, 'menuBar') ?? flag(params, 'menubar') ?? true,
     toolBar: js.toolBar ?? flag(params, 'toolBar') ?? flag(params, 'toolbar') ?? true,
+    embedded: js.embedded ?? flag(params, 'embedded') ?? window.parent !== window,
     targetOrigin: js.targetOrigin ?? params.get('origin') ?? '',
     eventTarget: js.eventTarget,
   };
@@ -545,6 +551,7 @@ try {
   const base = new URL('.', location.href).href.replace(/\/$/, '');
   const embed = embedOptions();
   set_embed_options(embed.close, embed.download, embed.view, embed.menuBar, embed.toolBar);
+  set_embedded(embed.embedded);
   await run(base, file?.name, file?.bytes);
   status?.remove();
   listenToAgent();
