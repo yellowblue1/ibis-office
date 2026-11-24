@@ -190,7 +190,8 @@ or a table, as `inspect`'s `blocks` are listed), the Nth slide and its Nth shape
 of a workbook (hidden ones counted: `number` − 1) and a cell.
 
 As the person scrolls, moves the caret or selects, the editor posts `{ source: 'ibisoffice-agent', type: 'place', place:
-{ top, at } }`: at most once a frame, and only when the place changed.
+{ top, at } }`: at most once a frame, and only when the place changed. The place the document opens at is not posted
+(it is taken as told when `ready` is posted), so the first `place` is the person's first move.
 
 | Kind | `top`: what is at the view's top edge | `at`: where the caret or the selection is, or `null` |
 | --- | --- | --- |

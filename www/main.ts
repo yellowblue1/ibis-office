@@ -545,6 +545,13 @@ function listenToAgent(): void {
       reply({ ok: false, error: String(error) });
     }
   });
+  // The place the document opens at is taken as told: a `place` is the person's move, and the opening one would pull
+  // the other editor of a side-by-side pair back to the top.
+  try {
+    agent_place();
+  } catch {
+    // No document open (the start view).
+  }
   window.parent.postMessage({ source: 'ibisoffice-agent', type: 'ready' }, origin);
   tellPlace(origin);
 }

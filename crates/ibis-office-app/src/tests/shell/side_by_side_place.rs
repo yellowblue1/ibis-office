@@ -42,7 +42,8 @@ fn show(s: &mut Scenario, params: &str) -> Result<(), String> {
     s.update(|e, window, cx| e.agent_show(params, window, cx))
 }
 
-/// The place is told once while it stays, and a place shown is not told back.
+/// The place is told once while it stays: the page takes the opening place this way when it posts `ready`
+/// (`www/main.ts`), so nothing is told until the person moves.
 fn told_once(s: &mut Scenario) {
     let first = s.update(|e, _, _| e.agent_place_changed());
     assert!(first.is_some(), "the place is told");
@@ -75,6 +76,10 @@ fn place_of_a_document() {
         // At the start: the first block at the top (the view's edge is above the first page), the caret in it.
         assert_eq!(place(&mut s), Place { top: Top::Block { block: 0, offset: 0.0 }, at: Some(At::Block { block: 0 }) });
         told_once(&mut s);
+        // After the opening place is taken, the first one told is the person's move.
+        s.wheel((600.0, 400.0), -200.0);
+        let first = s.update(|e, _, _| e.agent_place_changed()).expect("the person's first move is told");
+        assert!(!first.contains(r#""top":{"block":0,"offset":0.0}"#), "{first}");
 
         // A block halfway down at the top edge; read back as it was given.
         show(&mut s, r#"{"top":{"block":30,"offset":0.5}}"#).unwrap();
