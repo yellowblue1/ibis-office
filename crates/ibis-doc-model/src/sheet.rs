@@ -660,6 +660,51 @@ pub fn cell_name(column: u32, row: u32) -> String {
     format!("{letters}{}", row + 1)
 }
 
+/// The cell (row, column) of its own sheet whose number format a cell of General takes when `formula` (without `=`) is
+/// entered into it: the first one it refers to, for arithmetic and a few functions (not for counts, DATEDIF, EDATE, …).
+pub fn referenced_cell(formula: &str) -> Option<(u32, u32)> {
+    let upper = formula.trim_start().to_ascii_uppercase();
+    if let Some(paren) = upper.find('(') {
+        let name = upper[..paren].trim_start_matches(['+', '-', '@']);
+        let inherits = ["SUM", "AVERAGE", "MIN", "MAX", "ROUND", "ROUNDUP", "ROUNDDOWN", "ABS", "IF", "MEDIAN", "SUBTOTAL"];
+        if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_') && !name.is_empty() && !inherits.contains(&name) {
+            return None;
+        }
+    }
+    let mut first = None;
+    ibis_calc::formula::rewrite_references(formula, |r| {
+        if first.is_none() && r.sheet.is_none() && !r.whole_columns && !r.whole_rows {
+            first = Some((r.start.row, r.start.column));
+        }
+        Some(r.clone())
+    });
+    first
+}
+
+/// `text` with every `query` in it replaced by `with`, without regard to case (検索と置換's default), and how many were
+/// replaced; `None` when there is none.
+pub fn replace_ignoring_case(text: &str, query: &str, with: &str) -> Option<(String, usize)> {
+    if query.is_empty() {
+        return None;
+    }
+    let lower = text.to_lowercase();
+    let q = query.to_lowercase();
+    // Lower case of a different length (`İ`) would put the byte positions out of step with `text`: matched as written.
+    if lower.len() != text.len() {
+        let count = text.matches(query).count();
+        return (count > 0).then(|| (text.replace(query, with), count));
+    }
+    let (mut out, mut at, mut count) = (String::new(), 0, 0);
+    while let Some(i) = lower[at..].find(&q) {
+        out.push_str(&text[at..at + i]);
+        out.push_str(with);
+        at += i + q.len();
+        count += 1;
+    }
+    out.push_str(&text[at..]);
+    (count > 0).then_some((out, count))
+}
+
 /// A merged range, inclusive, 0-based.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CellRange {
@@ -2072,23 +2117,8 @@ impl Sheet {
     /// The number format Excel gives a cell of General that `formula` (without `=`) is entered into: that of the first cell
     /// of this sheet it refers to, for arithmetic and a few functions (not for counts, DATEDIF, EDATE, …).
     pub fn referenced_format(&self, formula: &str) -> Option<String> {
-        let upper = formula.trim_start().to_ascii_uppercase();
-        if let Some(paren) = upper.find('(') {
-            let name = upper[..paren].trim_start_matches(['+', '-', '@']);
-            let inherits = ["SUM", "AVERAGE", "MIN", "MAX", "ROUND", "ROUNDUP", "ROUNDDOWN", "ABS", "IF", "MEDIAN", "SUBTOTAL"];
-            if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_') && !name.is_empty() && !inherits.contains(&name) {
-                return None;
-            }
-        }
-        let mut first = None;
-        ibis_calc::formula::rewrite_references(formula, |r| {
-            if first.is_none() && r.sheet.is_none() && !r.whole_columns && !r.whole_rows {
-                first = Some((r.start.row, r.start.column));
-            }
-            Some(r.clone())
-        });
-        let (row, column) = first?;
-        let code = &self.styles[self.cell(row, column)?.style as usize].number_format;
+        let (row, column) = referenced_cell(formula)?;
+        let code = &self.styles.get(self.cell(row, column)?.style as usize)?.number_format;
         (code != "General" && code != "@").then(|| code.clone())
     }
 

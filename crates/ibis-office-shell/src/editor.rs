@@ -2530,6 +2530,15 @@ impl SlideEditor {
     // ----- Document edits ------------------------------------------------
 
     pub fn execute(&mut self, commands: Vec<Command>, cx: &mut Context<Self>) {
+        self.execute_recording(commands, true, cx);
+    }
+
+    /// [`SlideEditor::execute`] for an edit that is not the person's (an AI agent's): F4 still repeats the person's last.
+    pub fn execute_unrepeated(&mut self, commands: Vec<Command>, cx: &mut Context<Self>) {
+        self.execute_recording(commands, false, cx);
+    }
+
+    fn execute_recording(&mut self, commands: Vec<Command>, record_repeat: bool, cx: &mut Context<Self>) {
         let is_admin = commands.iter().all(|c| matches!(c, Command::SetMarkAsFinal { .. } | Command::SetReadOnlyRecommended { .. } | Command::SetModifyVerifier { .. }));
         if !is_admin && self.pages_are_slides() {
             if with_format!(self, edit_blocked_by_file(self)) {
@@ -2541,7 +2550,8 @@ impl SlideEditor {
                 return;
             }
         }
-        if let Err(err) = self.document.execute(commands) {
+        let executed = if record_repeat { self.document.execute(commands) } else { self.document.execute_unrepeated(commands) };
+        if let Err(err) = executed {
             log::warn!("edit rejected: {err}");
         }
         self.fix_selection();

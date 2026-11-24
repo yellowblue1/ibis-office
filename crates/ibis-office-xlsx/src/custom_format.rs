@@ -322,25 +322,6 @@ fn stops_colors(stops: &[(u16, ibis_doc_model::Rgb)]) -> impl Fn(f32) -> ibis_do
     move |t| crate::shell::chrome::gradient_slider::interpolated(&points, (t.clamp(0.0, 1.0) * 100_000.0).round() as u32).rgb
 }
 
-/// Whether `code` is a complete number format code, so that applying it as it is typed never leaves the cells with half a code:
-/// not empty, at most the 4 sections and 255 characters Excel takes, quotes and brackets closed, no escape (`\`, `_`, `*`) left without its character.
-fn is_complete_format_code(code: &str) -> bool {
-    if code.trim().is_empty() || code.chars().count() > 255 { return false; }
-    let (mut sections, mut quoted, mut bracket, mut escaped) = (1, false, false, false);
-    for c in code.chars() {
-        if escaped { escaped = false; continue; }
-        match c {
-            '\\' | '_' | '*' if !quoted && !bracket => escaped = true,
-            '"' if !bracket => quoted = !quoted,
-            '[' if !quoted && !bracket => bracket = true,
-            ']' if !quoted && bracket => bracket = false,
-            ';' if !quoted && !bracket => sections += 1,
-            _ => {}
-        }
-    }
-    sections <= 4 && !quoted && !bracket && !escaped
-}
-
 /// The rotation field's text for an OOXML angle (`0..=90`, `91..=180` as -1..-90; vertical text has none).
 fn rotation_text(rotation: u8) -> String {
     match rotation {
@@ -394,7 +375,7 @@ fn format_fields(fields: &SyncedFields, editor: &SlideEditor, subs: &mut Vec<Sub
         read: |e| e.panel_style().number_format,
         show: |v| v.clone(),
         // A code that is not complete is a draft: applying it as it is typed never leaves the cells with half a code.
-        parse: |t| is_complete_format_code(t).then(|| t.to_string()),
+        parse: |t| ibis_calc::numfmt::is_complete_code(t).then(|| t.to_string()),
         write: |e, v, cx| e.panel_change(StyleChange::NumberFormat(v), cx),
     }, editor, subs, window, cx);
     let font = fields.add(FieldSpec::<Option<String>> {

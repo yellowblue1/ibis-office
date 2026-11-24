@@ -5614,12 +5614,21 @@ enum WidthMark {
 fn set_size_marked(presentation: &mut Presentation, slide: SlideId, axis: Axis, first: u32, last: u32, size: Emu, mark: WidthMark) -> Result<Command, EditError> {
     let (old, old_hidden) = {
         let sheet = sheet_mut(presentation, slide)?;
-        let len = match axis {
-            Axis::Rows => sheet.rows.len(),
-            Axis::Columns => sheet.columns.len(),
+        let limit = match axis {
+            Axis::Rows => ibis_calc::formula::MAX_ROW,
+            Axis::Columns => ibis_calc::formula::MAX_COLUMN,
         };
-        if first > last || last as usize >= len || size < 0 {
+        if first > last || last > limit || size < 0 {
             return Err(EditError::IndexOutOfRange);
+        }
+        // Rows and columns past those the sheet keeps are of its default size: given one of their own, they are kept from
+        // then on, as a cell entered past them makes them.
+        let (sizes, default) = match axis {
+            Axis::Rows => (&mut sheet.rows, if sheet.default_row > 0 { sheet.default_row } else { 20 * crate::EMU_PER_POINT }),
+            Axis::Columns => (&mut sheet.columns, if sheet.default_column > 0 { sheet.default_column } else { 54 * crate::EMU_PER_POINT }),
+        };
+        if last as usize >= sizes.len() {
+            sizes.resize(last as usize + 1, default);
         }
         sizes_now(sheet, axis, first, (last - first + 1) as usize)
     };

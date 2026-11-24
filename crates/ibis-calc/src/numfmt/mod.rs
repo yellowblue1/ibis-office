@@ -108,6 +108,30 @@ pub fn is_date_format(code: &str) -> bool {
     parsed(code).first().is_some_and(Section::is_date)
 }
 
+/// Whether `code` is a complete number format code, one a cell can be given: not empty, at most the 4 sections and 255
+/// characters Excel takes, quotes and brackets closed, no escape (`\`, `_`, `*`) left without its character.
+pub fn is_complete_code(code: &str) -> bool {
+    if code.trim().is_empty() || code.chars().count() > 255 {
+        return false;
+    }
+    let (mut sections, mut quoted, mut bracket, mut escaped) = (1, false, false, false);
+    for c in code.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' | '_' | '*' if !quoted && !bracket => escaped = true,
+            '"' if !bracket => quoted = !quoted,
+            '[' if !quoted && !bracket => bracket = true,
+            ']' if !quoted && bracket => bracket = false,
+            ';' if !quoted && !bracket => sections += 1,
+            _ => {}
+        }
+    }
+    sections <= 4 && !quoted && !bracket && !escaped
+}
+
 /// Format a cell's value with `code`.
 pub fn format(value: &CellValue, code: &str, date1904: bool) -> Formatted {
     let sections = parsed(code);

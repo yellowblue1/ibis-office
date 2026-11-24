@@ -106,25 +106,47 @@ marked as final is not edited.
 ## A workbook
 
 `inspect` gives the sheets in the workbook's order, each with its `id`, `name`, `number` (1-based, hidden sheets counted),
-`hidden` (a hidden sheet has no `id` and is not edited), `other` (a chart sheet: no cells), `protected` (シートの保護: its
-cells are not changed), `used` (the range from the first to the last cell with something in it, `A1:F42`), `merged` (the
-merged ranges) and its `cells` with a value or a formula, by row: `at` (`B2`), `value` (a string, a number or a logical
-value; an error as its text, `#DIV/0!`), `formula` (`=SUM(B3:B9)`) and `text`, what the cell shows when that is not the value
-written out (a number format, a date: `{"at": "A5", "value": 46350, "text": "2026/11/24"}`). A sheet lists at most 2000 cells,
-the first rows first; `more` says how many were left out.
+`hidden` (a hidden sheet has no `id` and is not edited), `other` (a chart sheet: no cells and no `id`, not edited),
+`protected` (シートの保護: its cells are not changed), `used` (the range from the first to the last cell with something in it,
+`A1:F42`), `merged` (the merged ranges) and its `cells` with a value or a formula, by row: `at` (`B2`), `value` (a string, a
+number or a logical value; an error as its text, `#DIV/0!`), `formula` (`=SUM(B3:B9)`) and `text`, what the cell shows when
+that is not the value written out (a number format, a date: `{"at": "A5", "value": 46350, "text": "2026/11/24"}`).
+
+The summary is bounded: at most 100 sheets (`more_sheets` says how many were left out), 2000 cells of a sheet, the first rows
+first (`more`), 200 merged ranges of a sheet (`more_merged`), and 1000 characters of a cell's value and of its `text`
+(`cut: true` says only the start is given; a formula is never cut).
 
 The ids stay while the workbook is open. A file read again is numbered again (the same bytes give the same ids).
 
 A sheet is named by its id, its name (in any case, as Excel), or the `as` name of one an earlier operation of the list made.
+An `as` name must not be another sheet's name or an earlier `as` name, and one of a sheet an earlier operation deleted is
+refused; `History` is Excel's own and no sheet is named so.
 Cells and ranges are in A1 notation (`B2`, `A1:C3`), rows by their numbers (`1:3`), columns by their letters (`A:C`), colours
 `#RRGGBB`. A list is applied whole or not at all, as a presentation's; the editor then shows the sheet the last operation named.
 
-`set_cells` puts values as a person typing them would: a string starting with `=` is a formula (`=sum(a1:a3)` is entered as
+`set_cells` puts values as imported data, which is how a person typing them would enter them except for AutoCorrect: a string starting with `=` is a formula (`=sum(a1:a3)` is entered as
 `=SUM(A1:A3)`; one that does not read is refused); a number, a percentage or a date written as typed (`1,234`, `50%`,
 `2026/11/24`) is that number, and a cell of General takes the number format Excel gives it; `TRUE` and `FALSE` are logical
 values; a leading `'` keeps the rest as text, a sign-led word (`-x`) is text, and in a cell formatted as text (`@`) everything
 is. A JSON number or logical value is put as it is; `null` or `""` empties the cell. What depends on the cells is calculated
-again. The editor's AutoCorrect and the links it makes of typed addresses are not applied.
+again. The editor's AutoCorrect and the links it makes of typed addresses are not applied. A formula entered after a cell
+the same `set_cells` formatted (`[["50%", "=A1*2"]]`) takes that format, as entering them one after another does.
+
+What the workbook guards is kept, as in the editor:
+
+- A protected workbook (ブックの保護) refuses `add_sheet`, `rename_sheet`, `delete_sheet` and `move_sheet`; a protected sheet's
+  cells are not changed, and `replace_text` passes it by.
+- A pivot table is changed by its field list only: `set_cells`, `clear` and `merge` into one (its cells can be formatted), and rows or
+  columns inserted or deleted through one, are refused; `replace_text` passes its cells by.
+- A value the cell's data validation (データの入力規則) refuses is refused, as is one its warning asks about; one it only
+  informs about is put.
+- Rows or columns inserted that would push cells with something in them off the sheet are refused.
+- `number_format` must be a code Excel reads (`"0.0%"`, `"[Red]#,##0"`); one that does not is refused.
+
+A sheet keeps its rows and columns up to the last one used. `insert_rows` and `insert_columns` past them change nothing;
+`set_row_height` and `set_column_width` past them set the size (`AA:XFD` sets every column from AA on).
+
+The agent's edits are one step of 元に戻す (Ctrl+Z), and F4 (繰り返し) repeats the person's last edit, not the agent's.
 
 | `op` | Fields |
 | --- | --- |
@@ -143,7 +165,7 @@ again. The editor's AutoCorrect and the links it makes of typed addresses are no
 | `unmerge` | `sheet`, `range` (the merged ranges within it) |
 | `set_column_width` | `sheet`, `columns` (`A:C`), `width` (characters, 0 to 255; 0 hides) |
 | `set_row_height` | `sheet`, `rows` (`1:3`), `height` (points, 0 to 409; 0 hides) |
-| `replace_text` | `find`, `replace`, `sheet?` (the text cells of every shown sheet; not formulas; says how many it `replaced`) |
+| `replace_text` | `find`, `replace`, `sheet?` (the text cells of every shown sheet; not formulas; case ignored, as the editor's 置換 by default; says how many it `replaced`) |
 
 `add_sheet` answers the new sheet's id in `created` (`{"sheet": 3}`).
 

@@ -41,15 +41,16 @@ impl SlideEditor {
         let ids = self.document.ids();
         let planned = ibis_agent::plan(&ops, &current, &source, &mut || ids.new_shape_id().0).map_err(|e| e.to_string())?;
         let steps = self.document.undo_len();
-        self.execute(planned.commands, cx);
+        self.execute_unrepeated(planned.commands, cx);
         if self.document.undo_len() == steps {
             return Err("the editor refused the change (the document is marked as final, or read-only)".into());
         }
         if let Some(slide) = planned.shown
             && slide != self.current_slide
         {
+            // A sheet is shown as a click on its tab shows it (the workbook's `show_page`): scrolled and zoomed as it was left.
             if source.kind() == ibis_pptx::Kind::Workbook {
-                self.agent_show_sheet(slide, window, cx);
+                self.select_slide(slide, window, cx);
             } else {
                 self.selection = None;
                 self.set_current_slide(slide);

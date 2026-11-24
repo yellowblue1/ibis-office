@@ -44,6 +44,7 @@ pub mod sheet;
 pub mod sheet_calc;
 pub mod sheet_command;
 pub mod sheet_ops;
+pub mod sheet_validation;
 pub mod form_control;
 pub mod timeline;
 pub mod slicer;

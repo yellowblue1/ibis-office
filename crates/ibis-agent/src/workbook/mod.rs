@@ -6,7 +6,7 @@
 mod inspect;
 mod ops;
 
-pub use inspect::{CELLS_PER_SHEET, CellInfo, Inspection, SheetInfo, inspect};
+pub use inspect::{CELLS_PER_SHEET, CellInfo, Inspection, MERGED_PER_SHEET, SHEETS, SheetInfo, TEXT_CHARACTERS, inspect};
 pub use ops::{Created, Op, plan};
 
 #[cfg(test)]
