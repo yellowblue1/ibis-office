@@ -22,6 +22,7 @@ pub const VERSION: &str = env!("IBIS_VERSION");
 pub use ibis_office_base::app_data;
 pub mod actions;
 pub mod agent;
+mod agent_workbook;
 pub mod external;
 pub mod app_hooks;
 #[cfg(headless_export)]

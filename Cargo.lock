@@ -3261,6 +3261,7 @@ dependencies = [
 name = "ibis-agent"
 version = "0.8.0"
 dependencies = [
+ "ibis-calc",
  "ibis-doc-model",
  "ibis-pptx",
  "serde",

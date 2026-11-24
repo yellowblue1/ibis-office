@@ -48,9 +48,13 @@ impl SlideEditor {
         if let Some(slide) = planned.shown
             && slide != self.current_slide
         {
-            self.selection = None;
-            self.set_current_slide(slide);
-            with_format!(self, clear_page_selection(self));
+            if source.kind() == ibis_pptx::Kind::Workbook {
+                self.agent_show_sheet(slide, window, cx);
+            } else {
+                self.selection = None;
+                self.set_current_slide(slide);
+                with_format!(self, clear_page_selection(self));
+            }
         }
         cx.notify();
         let document = self.agent_summary(&source);

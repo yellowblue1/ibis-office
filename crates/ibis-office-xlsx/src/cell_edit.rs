@@ -721,7 +721,7 @@ impl SlideEditor {
                     // Excel puts the references, the functions and TRUE/FALSE it was given in lower case into upper case (#185).
                     let sheet_names: Vec<&str> = self.presentation().workbook.as_ref().map(|w| w.sheets.iter().map(|s| s.name.as_str()).collect()).unwrap_or_default();
                     let f = ibis_calc::formula::normalize_case(&f, &sheet_names);
-                    let format = sheet.and_then(|sheet| referenced_format(sheet, &f));
+                    let format = sheet.and_then(|sheet| sheet.referenced_format(&f));
                     (CellInput::Formula(f), format)
                 }
                 // オートコレクト: the text typed in is corrected as Excel's is.
@@ -1309,29 +1309,6 @@ fn apply_to_runs(runs: Vec<CellRun>, b0: usize, b1: usize, change: &StyleChange,
         }
     }
     merge_runs(split)
-}
-
-fn referenced_format(sheet: &ibis_doc_model::Sheet, formula: &str) -> Option<String> {
-    // Excel gives the result the format of the cell it refers to for
-    // arithmetic and a few functions (not for counts, DATEDIF, EDATE, …).
-    let upper = formula.trim_start().to_ascii_uppercase();
-    if let Some(paren) = upper.find('(') {
-        let name = upper[..paren].trim_start_matches(['+', '-', '@']);
-        let inherits = ["SUM", "AVERAGE", "MIN", "MAX", "ROUND", "ROUNDUP", "ROUNDDOWN", "ABS", "IF", "MEDIAN", "SUBTOTAL"];
-        if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_') && !name.is_empty() && !inherits.contains(&name) {
-            return None;
-        }
-    }
-    let mut first = None;
-    ibis_calc::formula::rewrite_references(formula, |r| {
-        if first.is_none() && r.sheet.is_none() && !r.whole_columns && !r.whole_rows {
-            first = Some((r.start.row, r.start.column));
-        }
-        Some(r.clone())
-    });
-    let (row, column) = first?;
-    let code = &sheet.styles[sheet.cell(row, column)?.style as usize].number_format;
-    (code != "General" && code != "@").then(|| code.clone())
 }
 
 /// The cell reference touching byte `caret` in `text` (`$A$1`, `A1`, a
