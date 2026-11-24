@@ -1228,15 +1228,7 @@ fn browser_fallbacks(_: &TextStyle) -> Option<FontFallbacks> {
     None
 }
 
-/// Typefaces made for Japanese (or other East Asian) text.
-pub fn is_east_asian_typeface(name: &str) -> bool {
-    const HINTS: &[&str] = &[
-        "M PLUS", "Noto Sans JP", "Noto Serif JP", "Noto Sans CJK", "Yu Gothic", "Yu Mincho",
-        "Meiryo", "Hiragino", "MS Gothic", "MS Mincho", "MS PGothic", "BIZ UD", "Kosugi",
-        "Sawarabi", "IPA", "Source Han",
-    ];
-    name.chars().any(|c| c as u32 >= 0x2e80) || HINTS.iter().any(|h| name.contains(h))
-}
+pub use ibis_doc_model::text::is_east_asian_typeface;
 
 /// Whether an uninstalled Latin typeface name is a serif face (drawn with
 /// Times New Roman / Liberation Serif rather than a sans-serif stand-in).

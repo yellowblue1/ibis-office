@@ -17,6 +17,7 @@ use ibis_doc_model::{Document, Table};
 use ibis_pptx::Source;
 use serde::{Deserialize, Serialize};
 
+use crate::shared::{Align, List, ParagraphFormat, Text, TextFormat, font_size, occurrences, rgb};
 use crate::{OpError, Planned};
 
 /// A slide or a shape: its id, or the `as` name of one made earlier in the same list; a shape also as the placeholder
@@ -29,29 +30,6 @@ pub enum Ref {
     Placeholder { placeholder: String },
 }
 
-/// Text as its paragraphs, in order: the same shape [`crate::inspect`] gives it in. A paragraph holds no line break, so
-/// where one paragraph ends is never a character the agent has to write.
-#[derive(Clone, Debug, Deserialize)]
-#[serde(try_from = "Vec<String>")]
-pub struct Text(String);
-
-impl TryFrom<Vec<String>> for Text {
-    type Error = String;
-
-    fn try_from(paragraphs: Vec<String>) -> Result<Self, String> {
-        if let Some(i) = paragraphs.iter().position(|p| p.contains(['\n', '\r', '\u{b}'])) {
-            return Err(format!("paragraph {i} has a line break: give each paragraph as its own string"));
-        }
-        Ok(Text(paragraphs.join("\n")))
-    }
-}
-
-impl Text {
-    fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rect {
@@ -59,49 +37,6 @@ pub struct Rect {
     pub y: f64,
     pub w: f64,
     pub h: f64,
-}
-
-/// A character format: what is given is set, the rest is left as it is.
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TextFormat {
-    pub bold: Option<bool>,
-    pub italic: Option<bool>,
-    pub underline: Option<bool>,
-    /// In points.
-    pub size: Option<f64>,
-    pub color: Option<String>,
-    pub font: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Align {
-    Left,
-    Center,
-    Right,
-    Justify,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum List {
-    None,
-    Bullet,
-    Numbered,
-}
-
-/// A paragraph format: what is given is set, the rest is left as it is.
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ParagraphFormat {
-    pub align: Option<Align>,
-    pub list: Option<List>,
-    /// The outline level, 0 to 8.
-    pub level: Option<u8>,
-    /// In points.
-    pub space_before: Option<f64>,
-    pub space_after: Option<f64>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -612,17 +547,12 @@ fn paragraph_spans(body: &TextBody) -> Vec<(usize, usize)> {
         .collect()
 }
 
-/// The character positions of each `find` in `text`, not overlapping.
-fn occurrences(text: &str, find: &str) -> Vec<usize> {
-    text.match_indices(find).map(|(byte, _)| text[..byte].chars().count()).collect()
-}
-
 fn character_format(format: &TextFormat) -> Result<CharacterFormat, String> {
     Ok(CharacterFormat {
         bold: format.bold,
         italic: format.italic,
         underline: format.underline,
-        font_size: format.size.map(|s| if s > 0.0 && s <= 4000.0 { Ok((s * 100.0).round() as u32) } else { Err(format!("size {s} is not a font size")) }).transpose()?,
+        font_size: format.size.map(font_size).transpose()?,
         color: format.color.as_deref().map(rgb).transpose()?,
         font: format.font.clone().map(Some),
         ..Default::default()
@@ -630,9 +560,7 @@ fn character_format(format: &TextFormat) -> Result<CharacterFormat, String> {
 }
 
 fn paragraph_format(format: &ParagraphFormat) -> Result<ibis_doc_model::text::ParagraphFormat, String> {
-    if format.level.is_some_and(|l| l > 8) {
-        return Err("level is 0 to 8".into());
-    }
+    format.check()?;
     let points = |v: Option<f64>| v.map(|v| if v >= 0.0 { Ok((v * 100.0).round() as u32) } else { Err(format!("{v} is negative")) }).transpose();
     Ok(ibis_doc_model::text::ParagraphFormat {
         align: format.align.map(|a| match a {
@@ -651,14 +579,6 @@ fn paragraph_format(format: &ParagraphFormat) -> Result<ibis_doc_model::text::Pa
         space_after: points(format.space_after)?,
         ..Default::default()
     })
-}
-
-fn rgb(color: &str) -> Result<Rgb, String> {
-    let hex = color.strip_prefix('#').unwrap_or(color);
-    if hex.len() != 6 {
-        return Err(format!("{color:?} is not a colour (#RRGGBB)"));
-    }
-    u32::from_str_radix(hex, 16).map(Rgb).map_err(|_| format!("{color:?} is not a colour (#RRGGBB)"))
 }
 
 fn emu(points: f64) -> i64 {

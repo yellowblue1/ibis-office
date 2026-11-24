@@ -136,6 +136,16 @@ pub fn is_east_asian(c: char) -> bool {
     matches!(c as u32, 0x2460..=0x24ff | 0x25a0..=0x25ff) || c as u32 >= 0x2e80
 }
 
+/// Typefaces made for Japanese (or other East Asian) text.
+pub fn is_east_asian_typeface(name: &str) -> bool {
+    const HINTS: &[&str] = &[
+        "M PLUS", "Noto Sans JP", "Noto Serif JP", "Noto Sans CJK", "Yu Gothic", "Yu Mincho",
+        "Meiryo", "Hiragino", "MS Gothic", "MS Mincho", "MS PGothic", "BIZ UD", "Kosugi",
+        "Sawarabi", "IPA", "Source Han",
+    ];
+    name.chars().any(|c| c as u32 >= 0x2e80) || HINTS.iter().any(|h| name.contains(h))
+}
+
 /// Typefaces by script: a theme's heading or body fonts.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FontSet {

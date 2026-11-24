@@ -14,6 +14,7 @@
 
 pub mod document;
 pub mod presentation;
+mod shared;
 pub mod workbook;
 
 use std::sync::Arc;
