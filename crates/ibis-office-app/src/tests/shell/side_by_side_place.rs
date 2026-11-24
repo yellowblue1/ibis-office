@@ -104,7 +104,6 @@ fn place_of_a_document() {
         );
         let mut s = open_made(Kind::Document, "side-by-side.docx", &ops, view);
         let blocks = s.with(|e, _| e.flow().unwrap().body.len());
-        let table = s.with(|e, _| e.flow().unwrap().body.iter().position(|b| matches!(b, Block::Table(_)))).expect("the table");
         assert!(blocks > 80, "{blocks} blocks");
 
         // At the start: the first block at the top (the view's edge is above the first page), the caret in it.
@@ -114,6 +113,23 @@ fn place_of_a_document() {
         s.wheel((600.0, 400.0), -200.0);
         let first = s.update(|e, _, _| e.agent_place_changed()).expect("the person's first move is told");
         assert!(!first.contains(r#""top":{"block":0,"offset":0.0}"#), "{first}");
+
+        // An agent's edit that moves the blocks under the view is not the person's move: nothing is told, until they
+        // scroll. (A read-only editor is not edited.)
+        if !view {
+            show(&mut s, r#"{"top":{"block":30,"offset":0}}"#).unwrap();
+            let first = s.with(|e, _| match &e.flow().unwrap().body[0] {
+                Block::Paragraph(p) => p.id,
+                Block::Table(t) => t.id,
+            });
+            let before = place(&mut s).top;
+            s.update(|e, window, cx| e.agent_apply(&format!(r#"[{{"op":"insert_paragraphs","before":{first},"text":["New","Paragraphs"]}}]"#), window, cx)).expect("the edit");
+            s.wait(100);
+            assert_ne!(place(&mut s).top, before, "the edit moved the blocks under the view");
+            assert_eq!(s.update(|e, _, _| e.agent_place_changed()), None, "an agent's edit is not told");
+            s.wheel((600.0, 400.0), -100.0);
+            assert!(s.update(|e, _, _| e.agent_place_changed()).is_some(), "the person's scroll is told");
+        }
 
         // A block halfway down at the top edge; read back as it was given.
         show(&mut s, r#"{"top":{"block":30,"offset":0.5}}"#).unwrap();
@@ -148,6 +164,7 @@ fn place_of_a_document() {
         assert!(block <= 75 && block > 60, "block {block} at the top");
 
         // A table is one block, the caret in one of its cells in it.
+        let table = s.with(|e, _| e.flow().unwrap().body.iter().position(|b| matches!(b, Block::Table(_)))).expect("the table");
         show(&mut s, &format!(r#"{{"at":{{"block":{table}}}}}"#)).unwrap();
         assert_eq!(place(&mut s).at, Some(At::Block { block: table }));
 
@@ -238,6 +255,14 @@ fn place_of_a_workbook() {
         assert_eq!(place(&mut s).top, Top::Cell { sheet: 1, row: 50, column: 3 });
         not_told_back(&mut s);
 
+        // Far past the grid drawn so far, down and right: there exactly, and so on the next drawing too.
+        show(&mut s, r#"{"top":{"sheet":1,"row":5000,"column":200}}"#).unwrap();
+        assert_eq!(place(&mut s).top, Top::Cell { sheet: 1, row: 5000, column: 200 });
+        s.wait(50);
+        assert_eq!(place(&mut s).top, Top::Cell { sheet: 1, row: 5000, column: 200 });
+        not_told_back(&mut s);
+        show(&mut s, r#"{"top":{"sheet":1,"row":50,"column":3}}"#).unwrap();
+
         // The active cell with `top`: not scrolled to.
         let before = scroll(&mut s);
         show(&mut s, r#"{"top":{"sheet":1,"row":50,"column":3},"at":{"sheet":1,"row":7,"column":2}}"#).unwrap();
@@ -271,5 +296,13 @@ fn place_of_a_workbook() {
             assert_eq!(s.with(|e, _| e.document.revision()), revision, "a read-only workbook is not edited");
             assert!(!s.with(|e, _| e.document.is_dirty()), "nothing to save");
         }
+
+        // Split panes (表示 > 分割) scroll in their own way: no place is told or shown.
+        s.update(|e, _, _| {
+            let slide = e.current_slide;
+            e.document.execute(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::Split { slide, split: Some((2, 3)) })]).expect("split");
+        });
+        assert_eq!(s.with(|e, _| e.agent_place()), None);
+        assert!(show(&mut s, r#"{"top":{"sheet":1,"row":10,"column":1}}"#).is_err());
     }
 }

@@ -540,6 +540,9 @@ pub struct SlideEditor {
     /// The editor was drawn since the place was last read: only then can the place have changed (a scroll, a selection, the
     /// pages laid out again all draw it), so the page's reading every frame costs nothing while nothing is drawn.
     pub(crate) agent_place_drawn: bool,
+    /// The person used the mouse, the wheel, a touch or a key in the window since the place was last read: a place is told
+    /// only then, so one moved by an agent's edit or by the pages laid out again (fonts, pictures coming in) is not.
+    pub(crate) agent_person_input: std::rc::Rc<std::cell::Cell<bool>>,
     /// Whether this document was opened from an AutoRecover snapshot (XLSX-FILE-015).
     pub is_recovered: bool,
     /// Path of the autorecover backup file associated with this open document (if any).
@@ -582,6 +585,7 @@ impl SlideEditor {
         let dialog_keystrokes = cx.intercept_keystrokes(move |event, window, app| {
             if window.window_handle() == owner {
                 editor.update(app, |this, cx| {
+                    this.agent_person_input.set(true);
                     if this.panel_message.is_some() && matches!(event.keystroke.key.as_str(), "enter" | "escape") {
                         this.dismiss_panel_message(cx);
                         cx.stop_propagation(); return;
@@ -844,6 +848,8 @@ impl SlideEditor {
             last_synced_scroll: std::cell::Cell::new(Point::default()),
             agent_told_place: None,
             agent_place_drawn: true,
+            // The first reading takes the place the document opens at (`www/main.ts`, at `ready`).
+            agent_person_input: std::rc::Rc::new(std::cell::Cell::new(true)),
             is_recovered: false,
             autorecover_settings: None,
             recover_unsaved: None,
@@ -3526,6 +3532,7 @@ impl Render for SlideEditor {
                 let d = d.when_some(self.render_window_switcher(window, cx), |d, list| d.child(list));
                 d
             })
+            .child(crate::agent::person_input_watch(self.agent_person_input.clone()))
     }
 }
 

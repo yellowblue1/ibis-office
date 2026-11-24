@@ -87,6 +87,19 @@ pub(crate) fn page_place(content: &WorkspaceContent, pages: &[EmuSize], index: u
     }
 }
 
+/// The top of every page in the content (pixels), the pages one under another: `page_place`'s for each, in one pass.
+pub(crate) fn page_tops(content: &WorkspaceContent, pages: &[EmuSize]) -> Vec<f32> {
+    let gap = f32::from(content.slide_origin.y);
+    pages
+        .iter()
+        .scan(gap, |top, p| {
+            let this = *top;
+            *top += p.height as f32 * content.scale + gap;
+            Some(this)
+        })
+        .collect()
+}
+
 /// The page at `offset` in the content (pixels) and how far through it.
 fn page_at(content: &WorkspaceContent, pages: &[EmuSize], offset: f32, side_to_side: bool) -> (usize, f32) {
     if side_to_side {

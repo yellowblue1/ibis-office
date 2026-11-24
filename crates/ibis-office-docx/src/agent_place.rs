@@ -6,14 +6,16 @@
 //! is as tall as its laid-out lines, from its first line's top to its last line's bottom (on several pages: the page break
 //! between counted).
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use gpui_kit::*;
-use ibis_doc_model::{Block, EMU_PER_POINT, FlowPos};
+use ibis_doc_model::{Block, EMU_PER_POINT, FlowDocument, FlowPos};
 
-use crate::doc_ui::page_place;
+use crate::doc_ui::page_tops;
 use crate::ext::*;
-use crate::flow_layout::{Item, pages};
+use crate::flow_layout::{Item, Pagination, pages};
 use crate::shell::agent::{At, Place, Top, wrong_kind};
 use crate::shell::editor::SlideEditor;
 
@@ -25,34 +27,79 @@ fn paragraphs(block: &Block, out: &mut Vec<u32>) {
     }
 }
 
+/// Where a block's lines are on the pages: its first page and the top of its first line there, its last page and the
+/// bottom of its last line there (points from the page's top).
+#[derive(Clone, Copy)]
+struct Span {
+    first: (usize, f32),
+    last: (usize, f32),
+}
+
+/// The blocks of a document and of its pages as laid out, worked out once for each layout (the place is read every
+/// time the editor is drawn: the caret blinking, typing).
+struct Blocks {
+    doc: Arc<FlowDocument>,
+    pagination: Arc<Pagination>,
+    /// The body block each of its paragraphs is in.
+    owner: HashMap<u32, usize>,
+    spans: Vec<Option<Span>>,
+}
+
+thread_local! {
+    static BLOCKS: RefCell<Option<Blocks>> = const { RefCell::new(None) };
+}
+
+impl Blocks {
+    fn new(doc: Arc<FlowDocument>, pagination: Arc<Pagination>) -> Self {
+        let mut owner = HashMap::new();
+        let mut ids = Vec::new();
+        for (index, block) in doc.body.iter().enumerate() {
+            ids.clear();
+            paragraphs(block, &mut ids);
+            owner.extend(ids.iter().map(|&id| (id, index)));
+        }
+        let mut spans: Vec<Option<Span>> = vec![None; doc.body.len()];
+        for (page, laid) in pagination.pages.iter().enumerate() {
+            for item in &laid.items {
+                // Lines of the header, the footer, notes and text boxes are of paragraphs outside the body's blocks.
+                let Item::Line { para, y, h, .. } = item else { continue };
+                let Some(&block) = owner.get(para) else { continue };
+                let (top, bottom) = (*y, y + h);
+                let span = spans[block].get_or_insert(Span { first: (page, top), last: (page, bottom) });
+                if page == span.first.0 {
+                    span.first.1 = span.first.1.min(top);
+                }
+                span.last = if page > span.last.0 { (page, bottom) } else { (page, span.last.1.max(bottom)) };
+            }
+        }
+        Self { doc, pagination, owner, spans }
+    }
+}
+
+/// `f` with the blocks of the editor's document as laid out now.
+fn with_blocks<R>(editor: &SlideEditor, f: impl FnOnce(&Blocks) -> R) -> Option<R> {
+    let doc = editor.flow()?.clone();
+    let pagination = pages(&doc, &editor.resources);
+    BLOCKS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let fresh = cache.as_ref().is_some_and(|b| Arc::ptr_eq(&b.doc, &doc) && Arc::ptr_eq(&b.pagination, &pagination));
+        if !fresh {
+            *cache = Some(Blocks::new(doc, pagination));
+        }
+        cache.as_ref().map(f)
+    })
+}
+
 /// Each body block's band in the content (pixels, top and bottom), `None` for one with no line laid out.
 fn bands(editor: &SlideEditor) -> Option<Vec<Option<(f32, f32)>>> {
     if editor.is_page_movement_side_to_side() {
         return None;
     }
-    let doc = editor.flow()?;
     let content = editor.workspace_content()?;
-    let mut owner = HashMap::new();
-    for (index, block) in doc.body.iter().enumerate() {
-        let mut ids = Vec::new();
-        paragraphs(block, &mut ids);
-        owner.extend(ids.into_iter().map(|id| (id, index)));
-    }
-    let sizes = editor.page_sizes();
+    let tops = page_tops(&content, &editor.page_sizes());
     let k = content.scale * EMU_PER_POINT as f32;
-    let mut bands: Vec<Option<(f32, f32)>> = vec![None; doc.body.len()];
-    for (index, page) in pages(doc, &editor.resources).pages.iter().enumerate() {
-        let top = page_place(&content, &sizes, index, false).1;
-        for item in &page.items {
-            // Lines of the header, the footer, notes and text boxes are of paragraphs outside the body's blocks.
-            let Item::Line { para, y, h, .. } = item else { continue };
-            let Some(&block) = owner.get(para) else { continue };
-            let (from, to) = (top + y * k, top + (y + h) * k);
-            let band = bands[block].get_or_insert((from, to));
-            *band = (band.0.min(from), band.1.max(to));
-        }
-    }
-    Some(bands)
+    let at = |(page, y): (usize, f32)| tops.get(page).map(|top| top + y * k);
+    with_blocks(editor, |blocks| blocks.spans.iter().map(|span| span.and_then(|s| Some((at(s.first)?, at(s.last)?)))).collect())
 }
 
 /// The block nearest `index` that is laid out, after it first.
@@ -70,14 +117,6 @@ fn view(editor: &SlideEditor) -> Option<(f32, f32)> {
     Some((-f32::from(editor.doc_pane_scroll().offset().y), height))
 }
 
-fn block_of(editor: &SlideEditor, para: u32) -> Option<usize> {
-    editor.flow()?.body.iter().position(|block| {
-        let mut ids = Vec::new();
-        paragraphs(block, &mut ids);
-        ids.contains(&para)
-    })
-}
-
 pub(crate) fn place(editor: &SlideEditor) -> Option<Place> {
     let bands = bands(editor)?;
     let (view_top, _) = view(editor)?;
@@ -91,7 +130,8 @@ pub(crate) fn place(editor: &SlideEditor) -> Option<Place> {
             Top::block(block, 1.0)
         }
     };
-    let at = editor.ordered_selection().and_then(|(start, _)| block_of(editor, start.para)).map(|block| At::Block { block });
+    let start = editor.ordered_selection().map(|(start, _)| start.para);
+    let at = start.and_then(|para| with_blocks(editor, |blocks| blocks.owner.get(&para).copied()).flatten()).map(|block| At::Block { block });
     Some(Place { top, at })
 }
 

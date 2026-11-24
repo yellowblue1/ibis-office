@@ -190,8 +190,10 @@ or a table, as `inspect`'s `blocks` are listed), the Nth slide and its Nth shape
 of a workbook (hidden ones counted: `number` − 1) and a cell.
 
 As the person scrolls, moves the caret or selects, the editor posts `{ source: 'ibisoffice-agent', type: 'place', place:
-{ top, at } }`: at most once a frame, and only when the place changed. The place the document opens at is not posted
-(it is taken as told when `ready` is posted), so the first `place` is the person's first move.
+{ top, at } }`: at most once a frame, and only when the place changed. A `place` is the person's move: it is posted only
+after their own input to the editor (the mouse or a touch, the wheel, a key). The place the document opens at is not
+posted (it is taken as told when `ready` is posted), nor a place moved without the person: by an `apply` (blocks added
+above the view), by the pages laid out again (fonts or pictures that came in), by a `show`.
 
 | Kind | `top`: what is at the view's top edge | `at`: where the caret or the selection is, or `null` |
 | --- | --- | --- |
@@ -216,7 +218,9 @@ select and scroll there, and nothing is edited.
 - What the person was typing (a cell, a shape's text) is entered first.
 - The place a `show` puts the editor at is not posted back, so two editors that follow each other do not answer each
   other's moves: the next `place` posted is the person's own next move.
-- A document whose pages move side by side (表示 > ページの移動 > 左右) posts no place and refuses `top` and `at`.
+- A document whose pages move side by side (表示 > ページの移動 > 左右), and a sheet shown in the page layout view
+  (ページ レイアウト) or split into panes (表示 > 分割; frozen panes are not split ones), post no place and refuse `top` and
+  `at`.
 
 ## With no window
 

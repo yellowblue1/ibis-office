@@ -761,10 +761,15 @@ mod web {
             // The fonts that can be downloaded, asked about at the first start of a version (セットアップ).
             crate::shell::font_setup_dialog::start(cx);
             // The callback of the next frame runs before that frame is drawn: the one after it, once it has been.
-            let Some(window) = cx.windows().first().copied() else { return drop(drawn.send(())) };
+            let Some(window) = cx.windows().first().copied() else {
+                let _ = drawn.send(());
+                return;
+            };
             let _ = window.update(cx, move |_, window, _| {
                 window.on_next_frame(move |window, _| {
-                    window.on_next_frame(move |_, _| drop(drawn.send(())));
+                    window.on_next_frame(move |_, _| {
+                        let _ = drawn.send(());
+                    });
                     window.refresh();
                 });
                 window.refresh();

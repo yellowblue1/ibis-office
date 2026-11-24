@@ -3,7 +3,7 @@
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! A workbook's place for the embedding page's two editors side by side (`shell::agent::Place`): the sheet shown by its
 //! index in the workbook's order (hidden sheets counted, as `inspect`'s `number`), the top-left cell of the part of it
-//! that scrolls (the frozen or split rows and columns left out) and the active cell, 1-based.
+//! that scrolls (the frozen rows and columns left out) and the active cell, 1-based.
 
 use gpui_kit::*;
 use ibis_doc_model::{Emu, SlideId};
@@ -33,13 +33,11 @@ fn index_at(offsets: &[Emu], default: Emu, at: f32) -> u32 {
 }
 
 /// The view of the sheet shown: for each axis (x, y), where the part that scrolls starts in the window's content
-/// (pixels: the headers, the frozen or split part), the sheet's edge there, the size of the view, of the content, and
-/// pixels per EMU.
+/// (pixels: the headers, the frozen part), the sheet's edge there, the size of the view, and pixels per EMU.
 struct Geometry {
     head: Point<f32>,
     origin: Point<f32>,
     view: Size<f32>,
-    content: Size<f32>,
     scale: f32,
 }
 
@@ -55,7 +53,6 @@ fn geometry(editor: &SlideEditor) -> Option<Geometry> {
             f32::from(content.slide_origin.y) + shape.frame.y as f32 * content.scale,
         ),
         view: size(f32::from(ws.size.width), f32::from(ws.size.height)),
-        content: size(f32::from(content.size.width), f32::from(content.size.height)),
         scale: content.scale,
     })
 }
@@ -73,8 +70,22 @@ fn sheet_slide(editor: &SlideEditor, index: usize) -> Result<SlideId, String> {
     entry.slide.filter(|_| !entry.other).ok_or_else(|| format!("sheet {index} is hidden or not a worksheet, and is not shown"))
 }
 
+/// The page layout view (ページ レイアウト) and split panes (表示 > 分割) scroll in ways of their own: no place is told or
+/// shown there.
+fn own_scrolling(editor: &SlideEditor) -> bool {
+    editor.page_layout_shown() || editor.split_panes().is_some()
+}
+
+/// A row's height and a column's width where the sheet gives none, as the grid has them (`workspace_content`).
+fn defaults(sheet: &ibis_doc_model::Sheet) -> (Emu, Emu) {
+    let point = ibis_doc_model::EMU_PER_POINT;
+    let row = if sheet.default_row > 0 { sheet.default_row } else { 20 * point };
+    let column = if sheet.default_column > 0 { sheet.default_column } else { 54 * point };
+    (row, column)
+}
+
 pub(crate) fn place(editor: &SlideEditor) -> Option<Place> {
-    if editor.page_layout_shown() {
+    if own_scrolling(editor) {
         return None;
     }
     let sheet = sheet_index(editor, editor.current_slide)?;
@@ -83,8 +94,9 @@ pub(crate) fn place(editor: &SlideEditor) -> Option<Place> {
     let offset = editor.workspace_scroll.offset();
     // Half a pixel's slack: a view put at a row's top edge reads back as that row.
     let at = |scrolled: f32, head: f32, origin: f32| (scrolled + head - origin + 0.5) / g.scale;
-    let row = index_at(&cells.row_offsets(), cells.default_row, at(-f32::from(offset.y), g.head.y, g.origin.y));
-    let column = index_at(&cells.column_offsets(), cells.default_column, at(-f32::from(offset.x), g.head.x, g.origin.x));
+    let (default_row, default_column) = defaults(cells);
+    let row = index_at(&cells.row_offsets(), default_row, at(-f32::from(offset.y), g.head.y, g.origin.y));
+    let column = index_at(&cells.column_offsets(), default_column, at(-f32::from(offset.x), g.head.x, g.origin.x));
     let top = Top::Cell { sheet, row: row.min(MAX_SHEET_ROWS - 1) + 1, column: column.min(MAX_SHEET_COLUMNS - 1) + 1 };
     let active = editor.current_cell().map(|(column, row)| At::Cell { sheet, row: row + 1, column: column + 1 });
     Some(Place { top, at: active })
@@ -113,6 +125,9 @@ pub(crate) fn show(editor: &mut SlideEditor, top: Option<Top>, at: Option<At>, w
     if editor.current_slide != shown {
         editor.select_slide(shown, window, cx);
     }
+    if own_scrolling(editor) {
+        return Err("the sheet is shown in the page layout view or in split panes, which show no place".into());
+    }
     if let Some((slide, (row, column))) = at {
         if slide == shown {
             editor.set_cell(column, row);
@@ -125,11 +140,17 @@ pub(crate) fn show(editor: &mut SlideEditor, top: Option<Top>, at: Option<At>, w
     }
     if let Some((_, (row, column))) = top {
         let (Some(g), Some((_, cells))) = (geometry(editor), editor.current_sheet()) else { return Ok(()) };
-        let start = |offsets: &[Emu], default: Emu, index: u32, origin: f32, head: f32| origin + edge(offsets, default, index) as f32 * g.scale - head;
-        let x = start(&cells.column_offsets(), cells.default_column, column, g.origin.x, g.head.x);
-        let y = start(&cells.row_offsets(), cells.default_row, row, g.origin.y, g.head.y);
-        let clamp = |v: f32, view: f32, content: f32| px(-v.clamp(0.0, (content - view).max(0.0)));
-        editor.workspace_scroll.set_offset(point(clamp(x, g.view.width, g.content.width), clamp(y, g.view.height, g.content.height)));
+        let (default_row, default_column) = defaults(cells);
+        let (columns, rows) = (cells.column_offsets(), cells.row_offsets());
+        let at = |offsets: &[Emu], default: Emu, index: u32, origin: f32| origin + edge(offsets, default, index) as f32 * g.scale;
+        // Against the sheet's own end: the grid drawn reaches only some way past the view and the selection.
+        let clamp = |index: u32, offsets: &[Emu], default: Emu, last: u32, origin: f32, head: f32, view: f32| {
+            let end = at(offsets, default, last, origin);
+            px(-(at(offsets, default, index, origin) - head).clamp(0.0, (end - view).max(0.0)))
+        };
+        let x = clamp(column, &columns, default_column, MAX_SHEET_COLUMNS, g.origin.x, g.head.x, g.view.width);
+        let y = clamp(row, &rows, default_row, MAX_SHEET_ROWS, g.origin.y, g.head.y, g.view.height);
+        editor.workspace_scroll.set_offset(point(x, y));
     } else if at.is_some_and(|(slide, _)| slide == shown) {
         editor.scroll_cell_into_view();
     }

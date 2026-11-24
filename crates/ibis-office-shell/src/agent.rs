@@ -6,6 +6,8 @@
 //! editor's undo as the person's do, as one step, so ⌘Z takes it back whole; what the person was typing is entered
 //! first, as a save does.
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::*;
@@ -84,9 +86,12 @@ impl SlideEditor {
     /// the other editor of two side by side. A place this editor was asked to show is not told back, so two editors that
     /// follow each other do not answer each other's moves.
     pub fn agent_place_changed(&mut self) -> Option<String> {
-        if !std::mem::take(&mut self.agent_place_drawn) {
+        // Read once the editor has drawn what the person's input did (the drawing follows the input).
+        if !self.agent_place_drawn || !self.agent_person_input.get() {
             return None;
         }
+        self.agent_place_drawn = false;
+        self.agent_person_input.set(false);
         let place = serde_json::to_string(&self.agent_place()?).expect("serialisable");
         if self.agent_told_place.as_deref() == Some(place.as_str()) {
             return None;
@@ -181,6 +186,39 @@ struct Show {
     top: Option<Top>,
     #[serde(default)]
     at: Option<At>,
+}
+
+/// An element of no size that notes the person's mouse input to the window: a button pressed, a drag (a selection, a
+/// scroll bar), the wheel. Seen before the elements that handle it, which may stop it going further. (Keys are noted
+/// where the editor sees every keystroke of its window first: `SlideEditor::new`.)
+pub(crate) fn person_input_watch(input: Rc<Cell<bool>>) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |_, _, window, _| {
+            let noted = |input: &Rc<Cell<bool>>| {
+                let input = input.clone();
+                move |phase: DispatchPhase| {
+                    if phase == DispatchPhase::Capture {
+                        input.set(true);
+                    }
+                }
+            };
+            let down = noted(&input);
+            window.on_mouse_event(move |_: &MouseDownEvent, phase, _, _| down(phase));
+            let drag = noted(&input);
+            window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, _| {
+                if event.pressed_button.is_some() {
+                    drag(phase);
+                }
+            });
+            let up = noted(&input);
+            window.on_mouse_event(move |_: &MouseUpEvent, phase, _, _| up(phase));
+            let wheel = noted(&input);
+            window.on_mouse_event(move |_: &ScrollWheelEvent, phase, _, _| wheel(phase));
+        },
+    )
+    .absolute()
+    .size_0()
 }
 
 /// A place given to a file of another kind.
