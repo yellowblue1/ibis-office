@@ -436,7 +436,7 @@ async function fetchWasm(): Promise<Response> {
   }
   progress?.classList.add('starting');
   if (statusText) {
-    statusText.textContent = ja ? 'ibisOffice を起動しています…' : 'Starting ibisOffice…';
+    statusText.textContent = ja ? '起動しています…' : 'Starting…';
   }
   // Let the browser paint the full bar and the new text before the page
   // gets busy compiling and starting the app.
