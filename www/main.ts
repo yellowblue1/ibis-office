@@ -2,7 +2,7 @@
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 // Boots the wasm editor. `pkg/` is produced by scripts/build-web.sh.
-import init, { agent_apply, agent_inspect, agent_place, agent_save, agent_show, agent_state, run, set_embed_options, set_embedded } from './pkg/ibis_office_app.js';
+import init, { agent_apply, agent_inspect, agent_place, agent_place_opened, agent_save, agent_show, agent_state, run, set_embed_options, set_embedded } from './pkg/ibis_office_app.js';
 
 /** A file chosen by the user or loaded at startup. */
 interface PickedFile {
@@ -545,14 +545,17 @@ function listenToAgent(): void {
       reply({ ok: false, error: String(error) });
     }
   });
-  // The place the document opens at is taken as told: a `place` is the person's move, and the opening one would pull
-  // the other editor of a side-by-side pair back to the top.
+  // The place the document opens at comes with `ready`, not as a `place`: a `place` is the person's move.
+  let opened: string | undefined;
   try {
-    agent_place();
+    opened = agent_place_opened();
   } catch {
     // No document open (the start view).
   }
-  window.parent.postMessage({ source: 'ibisoffice-agent', type: 'ready' }, origin);
+  window.parent.postMessage(
+    { source: 'ibisoffice-agent', type: 'ready', ...(opened === undefined ? {} : { place: JSON.parse(opened) }) },
+    origin,
+  );
   tellPlace(origin);
 }
 

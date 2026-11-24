@@ -819,6 +819,13 @@ mod web {
         with_editor(|editor, _, _| Ok(editor.agent_place_changed()))
     }
 
+    /// The place the document is open at (`shell::agent::Place`, JSON), taken as told; nothing for a kind of file with no
+    /// places.
+    #[wasm_bindgen]
+    pub fn agent_place_opened() -> Result<Option<String>, JsValue> {
+        with_editor(|editor, _, _| Ok(editor.agent_place_opened()))
+    }
+
     /// Show a place (`{top?, at?}`, JSON), also in a read-only editor.
     #[wasm_bindgen]
     pub fn agent_show(params: &str) -> Result<(), JsValue> {

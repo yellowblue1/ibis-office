@@ -543,6 +543,10 @@ pub struct SlideEditor {
     /// The person used the mouse, the wheel, a touch or a key in the window since the place was last read: a place is told
     /// only then, so one moved by an agent's edit or by the pages laid out again (fonts, pictures coming in) is not.
     pub(crate) agent_person_input: std::rc::Rc<std::cell::Cell<bool>>,
+    /// Frames left in which a changed place is told as the person's move (`agent::PERSON_INPUT_FRAMES`).
+    pub(crate) agent_input_frames: u8,
+    /// A `show` was applied and not yet drawn: the place drawn after it is taken as told.
+    pub(crate) agent_showing: bool,
     /// Whether this document was opened from an AutoRecover snapshot (XLSX-FILE-015).
     pub is_recovered: bool,
     /// Path of the autorecover backup file associated with this open document (if any).
@@ -848,8 +852,9 @@ impl SlideEditor {
             last_synced_scroll: std::cell::Cell::new(Point::default()),
             agent_told_place: None,
             agent_place_drawn: true,
-            // The first reading takes the place the document opens at (`www/main.ts`, at `ready`).
-            agent_person_input: std::rc::Rc::new(std::cell::Cell::new(true)),
+            agent_person_input: std::rc::Rc::new(std::cell::Cell::new(false)),
+            agent_input_frames: 0,
+            agent_showing: false,
             is_recovered: false,
             autorecover_settings: None,
             recover_unsaved: None,
@@ -3395,12 +3400,14 @@ impl Render for SlideEditor {
         let theme = cx.theme();
         v_flex()
             .id("slide-editor").relative()
+            .child(crate::agent::person_input_watch(self.agent_person_input.clone()))
             .children(with_format!(self, root_event_surface(self, cx)))
             .child(gpui_kit::component::popup_guard::begin())
             .child(gpui_kit::component::popup_guard::catcher())
             .key_context(CONTEXT)
             // A press that closes a popup only closes it (`popup_guard`): the root asks first, `popup_guard::catcher` decides.
             .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                this.agent_person_input.set(true);
                 // The press that closed a menu is swallowed now, so a stale mark must not turn the next press on the bar into a close.
                 this.menu_dismissed_at=None;
                 if with_format!(this, range_pick_down(this, event, window, cx)) {cx.stop_propagation();return;}
@@ -3409,6 +3416,7 @@ impl Render for SlideEditor {
                 if with_format!(this, link_pressed(this, event, window, cx)) {cx.stop_propagation();}
             }))
             .capture_any_mouse_up(cx.listener(|this, event: &MouseUpEvent, window, cx| {
+                this.agent_person_input.set(true);
                 if with_format!(this, range_pick_up(this, window, cx)) {cx.stop_propagation();return;}
                 if this.dialog.drag.take().is_some() { cx.notify(); }
                 if !this.dialog_allows_pointer(event.position, window) { cx.stop_propagation(); }
@@ -3532,7 +3540,6 @@ impl Render for SlideEditor {
                 let d = d.when_some(self.render_window_switcher(window, cx), |d, list| d.child(list));
                 d
             })
-            .child(crate::agent::person_input_watch(self.agent_person_input.clone()))
     }
 }
 

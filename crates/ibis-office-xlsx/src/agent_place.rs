@@ -10,7 +10,7 @@ use ibis_doc_model::{Emu, SlideId};
 
 use crate::ext::*;
 use crate::shell::agent::{At, Place, Top, wrong_kind};
-use crate::shell::editor::SlideEditor;
+use crate::shell::editor::{SlideEditor, sheet_of};
 use crate::sheet_ui::{COLUMN_HEADER_HEIGHT, MAX_SHEET_COLUMNS, MAX_SHEET_ROWS, row_header_width};
 
 /// The top edge of row (or column) `index`, in EMU from the sheet's: `offsets` past their end go on at `default` each.
@@ -71,9 +71,9 @@ fn sheet_slide(editor: &SlideEditor, index: usize) -> Result<SlideId, String> {
 }
 
 /// The page layout view (ページ レイアウト) and split panes (表示 > 分割) scroll in ways of their own: no place is told or
-/// shown there.
-fn own_scrolling(editor: &SlideEditor) -> bool {
-    editor.page_layout_shown() || editor.split_panes().is_some()
+/// shown on a sheet shown so.
+fn own_scrolling(sheet: &ibis_doc_model::Sheet) -> bool {
+    crate::page_layout::shows_pages(sheet) || sheet.split.is_some()
 }
 
 /// A row's height and a column's width where the sheet gives none, as the grid has them (`workspace_content`).
@@ -85,12 +85,12 @@ fn defaults(sheet: &ibis_doc_model::Sheet) -> (Emu, Emu) {
 }
 
 pub(crate) fn place(editor: &SlideEditor) -> Option<Place> {
-    if own_scrolling(editor) {
+    let (_, cells) = editor.current_sheet()?;
+    if own_scrolling(cells) {
         return None;
     }
     let sheet = sheet_index(editor, editor.current_slide)?;
     let g = geometry(editor)?;
-    let (_, cells) = editor.current_sheet()?;
     let offset = editor.workspace_scroll.offset();
     // Half a pixel's slack: a view put at a row's top edge reads back as that row.
     let at = |scrolled: f32, head: f32, origin: f32| (scrolled + head - origin + 0.5) / g.scale;
@@ -119,14 +119,23 @@ pub(crate) fn show(editor: &mut SlideEditor, top: Option<Top>, at: Option<At>, w
         Some(_) => return Err(wrong_kind("workbook")),
     };
     let Some(shown) = top.or(at).map(|(slide, _)| slide) else { return Ok(()) };
+    let shown_sheet = editor.presentation().slides.iter().find(|s| s.id == shown).and_then(sheet_of);
+    if shown_sheet.is_some_and(|(_, sheet)| own_scrolling(sheet)) {
+        return Err("the sheet is shown in the page layout view or in split panes, which show no place".into());
+    }
+    // What the person is typing is entered only to select a cell (`at`): a view that follows the other editor's scrolling
+    // leaves it being typed.
     if editor.cell_edit().is_some() {
-        editor.commit_cell_edit(cx);
+        if at.is_none() {
+            if editor.current_slide != shown {
+                return Err("a cell is being typed in on another sheet: only a cell to select (`at`) leaves it".into());
+            }
+        } else {
+            editor.commit_cell_edit(cx);
+        }
     }
     if editor.current_slide != shown {
         editor.select_slide(shown, window, cx);
-    }
-    if own_scrolling(editor) {
-        return Err("the sheet is shown in the page layout view or in split panes, which show no place".into());
     }
     if let Some((slide, (row, column))) = at {
         if slide == shown {

@@ -66,12 +66,17 @@ pub(crate) struct PageGeometry {
     pub(crate) cell_scale: f32,
 }
 
+/// Whether `sheet` is laid out in pages on screen when shown (the page layout view, in a build that can work the pages
+/// out).
+pub(crate) fn shows_pages(sheet: &ibis_doc_model::Sheet) -> bool {
+    cfg!(all(any(target_os = "macos", target_os = "windows"), feature = "export")) && sheet.page_layout
+}
+
 #[ibis_office_macros::editor_ext(PageLayout)]
 impl SlideEditor {
-    /// Whether the current sheet is laid out in pages on screen (the page layout view, in a build that can
-    /// work the pages out).
+    /// Whether the current sheet is laid out in pages on screen (`shows_pages`).
     pub(crate) fn page_layout_shown(&self) -> bool {
-        cfg!(all(any(target_os = "macos", target_os = "windows"), feature = "export")) && self.current_sheet().is_some_and(|(_, s)| s.page_layout)
+        self.current_sheet().is_some_and(|(_, s)| shows_pages(s))
     }
 
     /// The pages of the current worksheet at `scale` (pixels per EMU of paper): `None` when the sheet is not

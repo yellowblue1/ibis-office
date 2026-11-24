@@ -37,6 +37,13 @@ pub(crate) fn show(editor: &mut SlideEditor, top: Option<Top>, at: Option<At>, w
     let Some(shown) = top.or(at.map(|(slide, _)| slide)).map(|n| n.min(last)) else { return Ok(()) };
     let id = editor.presentation().slides[shown].id;
     if editor.current_slide != id {
+        // Another slide ends what the person is typing in a shape: only a shape to select (`at`) may.
+        if editor.text_editing().is_some() {
+            if at.is_none() {
+                return Err("a shape's text is being typed in: only a shape to select (`at`) leaves it".into());
+            }
+            editor.end_text_edit(window, cx);
+        }
         editor.select_slide(id, window, cx);
     }
     // A shape is selected only on the slide shown: one of another slide could not be seen.
@@ -44,7 +51,7 @@ pub(crate) fn show(editor: &mut SlideEditor, top: Option<Top>, at: Option<At>, w
         && slide.min(last) == shown
     {
         if editor.text_editing().is_some() {
-            editor.commit_edit(window, cx);
+            editor.end_text_edit(window, cx);
         }
         let selected = shape.and_then(|m| listed(editor.slide()).nth(m));
         editor.set_selection(selected.into_iter().collect());

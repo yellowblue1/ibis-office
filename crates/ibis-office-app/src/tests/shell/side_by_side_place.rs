@@ -8,6 +8,7 @@ use super::Scenario;
 use crate::docx::ext::*;
 use crate::shell::agent::{At, Place, Top};
 use crate::xlsx::ext::*;
+use gpui_kit::{MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, TouchDragEvent, TouchPhase, point, px};
 use ibis_doc_model::Block;
 use ibis_pptx::Kind;
 
@@ -17,6 +18,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("shell::side_by_side_place_of_a_presentation", place_of_a_presentation),
         ("shell::side_by_side_place_of_a_workbook", place_of_a_workbook),
         ("shell::side_by_side_place_of_large_files", place_of_large_files),
+        ("shell::side_by_side_place_person_input_seen_first", person_input_seen_first),
     ]
 }
 
@@ -76,16 +78,27 @@ fn show(s: &mut Scenario, params: &str) -> Result<(), String> {
     s.update(|e, window, cx| e.agent_show(params, window, cx))
 }
 
-/// The place is told once while it stays: the page takes the opening place this way when it posts `ready`
-/// (`www/main.ts`), so nothing is told until the person moves.
-fn told_once(s: &mut Scenario) {
-    let first = s.update(|e, _, _| e.agent_place_changed());
-    assert!(first.is_some(), "the place is told");
-    assert_eq!(s.update(|e, _, _| e.agent_place_changed()), None, "an unchanged place is not told again");
+/// The place the document opened at, as `ready` gives it (`www/main.ts`): taken as told, so nothing is told until the
+/// person moves.
+fn opened(s: &mut Scenario) -> String {
+    let opened = s.update(|e, _, _| e.agent_place_opened()).expect("the opening place");
+    assert!(opened.starts_with(r#"{"top":"#), "{opened}");
+    assert_eq!(changed(s), None, "the opening place is not told");
+    opened
+}
+
+fn changed(s: &mut Scenario) -> Option<String> {
+    s.update(|e, _, _| e.agent_place_changed())
 }
 
 fn not_told_back(s: &mut Scenario) {
-    assert_eq!(s.update(|e, _, _| e.agent_place_changed()), None, "the place shown is not told back");
+    assert_eq!(changed(s), None, "the place shown is not told back");
+}
+
+/// The person's pointer moving with the button held where it moves nothing (above the window's content).
+fn nudge(s: &mut Scenario) {
+    let position = point(px(2.0), px(2.0));
+    s.dispatch(vec![PlatformInput::MouseMove(MouseMoveEvent { position, pressed_button: Some(MouseButton::Left), ..Default::default() })]);
 }
 
 fn scroll(s: &mut Scenario) -> (f32, f32) {
@@ -108,7 +121,7 @@ fn place_of_a_document() {
 
         // At the start: the first block at the top (the view's edge is above the first page), the caret in it.
         assert_eq!(place(&mut s), Place { top: Top::Block { block: 0, offset: 0.0 }, at: Some(At::Block { block: 0 }) });
-        told_once(&mut s);
+        assert_eq!(opened(&mut s), r#"{"top":{"block":0,"offset":0.0},"at":{"block":0}}"#);
         // After the opening place is taken, the first one told is the person's move.
         s.wheel((600.0, 400.0), -200.0);
         let first = s.update(|e, _, _| e.agent_place_changed()).expect("the person's first move is told");
@@ -118,6 +131,7 @@ fn place_of_a_document() {
         // scroll. (A read-only editor is not edited.)
         if !view {
             show(&mut s, r#"{"top":{"block":30,"offset":0}}"#).unwrap();
+            not_told_back(&mut s);
             let first = s.with(|e, _| match &e.flow().unwrap().body[0] {
                 Block::Paragraph(p) => p.id,
                 Block::Table(t) => t.id,
@@ -173,6 +187,32 @@ fn place_of_a_document() {
         let Top::Block { block, .. } = place(&mut s).top else { panic!() };
         assert!(block + 5 >= blocks, "block {block} of {blocks}");
         assert!(show(&mut s, r#"{"top":{"slide":0}}"#).is_err());
+        // The place pulled back from past the end is the one shown: the person's next input that moves nothing tells
+        // nothing, not the place the view was pulled back to.
+        not_told_back(&mut s);
+        nudge(&mut s);
+        assert_eq!(changed(&mut s), None, "a place shown and pulled back is not told after the person's input");
+
+        // A place drawn a frame or more after the person's input is still theirs; one long after it is not.
+        if !view {
+            let insert = |s: &mut Scenario| {
+                let first = s.with(|e, _| match &e.flow().unwrap().body[0] {
+                    Block::Paragraph(p) => p.id,
+                    Block::Table(t) => t.id,
+                });
+                s.update(|e, window, cx| e.agent_apply(&format!(r#"[{{"op":"insert_paragraphs","before":{first},"text":["New"]}}]"#), window, cx)).expect("the edit");
+            };
+            nudge(&mut s);
+            assert_eq!(changed(&mut s), None, "the input moved nothing yet");
+            insert(&mut s);
+            assert!(changed(&mut s).is_some(), "a place changed in the frames after the person's input is told");
+            nudge(&mut s);
+            for _ in 0..crate::shell::agent::PERSON_INPUT_FRAMES {
+                let _ = changed(&mut s);
+            }
+            insert(&mut s);
+            assert_eq!(changed(&mut s), None, "a place changed long after the person's input is not told");
+        }
 
         if view {
             // Escape does not take a read-only window out of viewing (writing the mode left a change to save).
@@ -197,7 +237,7 @@ fn place_of_a_presentation() {
         ]"#;
         let mut s = open_made(Kind::Presentation, "side-by-side.pptx", ops, view);
         let shown = |s: &mut Scenario| s.with(|e, _| e.presentation().slide_index(e.current_slide).unwrap());
-        told_once(&mut s);
+        opened(&mut s);
         show(&mut s, r#"{"top":{"slide":0}}"#).unwrap();
         assert_eq!(place(&mut s), Place { top: Top::Slide { slide: 0 }, at: Some(At::Shape { slide: 0, shape: None }) });
         not_told_back(&mut s);
@@ -226,6 +266,31 @@ fn place_of_a_presentation() {
         assert_eq!(shown(&mut s), 2);
         assert!(show(&mut s, r#"{"top":{"block":0}}"#).is_err());
 
+        if !view {
+            // A shape's text being typed in stays so through a `top` of its own slide; another slide is refused, changing
+            // nothing; only `at` ends it.
+            s.update(|e, _, cx| {
+                e.set_selection(Vec::new());
+                cx.notify();
+            });
+            let index = s.with(|e, _| e.slide().shapes.iter().position(|x| Some(x.id) == listed.first().copied()).unwrap());
+            s.double_click_shape(index);
+            s.type_text("typed");
+            let typing = |s: &mut Scenario| s.with(|e, _| e.text_editing().is_some());
+            assert!(typing(&mut s), "the shape's text is being typed in");
+            let revision = s.with(|e, _| e.document.revision());
+            show(&mut s, r#"{"top":{"slide":2}}"#).unwrap();
+            assert!(typing(&mut s), "a top of the same slide leaves the typing");
+            assert!(show(&mut s, r#"{"top":{"slide":0}}"#).is_err(), "another slide while typing is refused");
+            assert!(typing(&mut s), "a refused show leaves the typing");
+            assert_eq!((shown(&mut s), s.with(|e, _| e.document.revision())), (2, revision), "a refused show changes nothing");
+            show(&mut s, r#"{"top":{"slide":0},"at":{"slide":0,"shape":null}}"#).unwrap();
+            assert!(!typing(&mut s), "`at` ends the typing");
+            assert_eq!(shown(&mut s), 0);
+            let text = s.with(|e, _| e.presentation().slides[2].shapes[index].text_body().map(|b| b.text()));
+            assert!(text.is_some_and(|t| t.contains("typed")), "what was typed is kept");
+        }
+
         if view {
             show(&mut s, r#"{"at":{"slide":2,"shape":0}}"#).unwrap();
             let revision = s.with(|e, _| e.document.revision());
@@ -247,7 +312,7 @@ fn place_of_a_workbook() {
         let mut s = open_made(Kind::Workbook, "side-by-side.xlsx", ops, view);
         // The sheet the last operation named, at its top-left corner.
         assert_eq!(place(&mut s), Place { top: Top::Cell { sheet: 0, row: 1, column: 1 }, at: Some(At::Cell { sheet: 0, row: 1, column: 1 }) });
-        told_once(&mut s);
+        opened(&mut s);
 
         // Another sheet, scrolled so C50 is at the top left; read back as it was given.
         show(&mut s, r#"{"top":{"sheet":1,"row":50,"column":3}}"#).unwrap();
@@ -275,6 +340,7 @@ fn place_of_a_workbook() {
         show(&mut s, r#"{"at":{"sheet":1,"row":7,"column":2}}"#).unwrap();
         let Top::Cell { row, .. } = place(&mut s).top else { panic!() };
         assert!(row <= 7, "row 7 in view, {row} at the top");
+        not_told_back(&mut s);
 
         // The person moving the active cell is told.
         s.key("down");
@@ -297,12 +363,82 @@ fn place_of_a_workbook() {
             assert!(!s.with(|e, _| e.document.is_dirty()), "nothing to save");
         }
 
-        // Split panes (表示 > 分割) scroll in their own way: no place is told or shown.
+        if !view {
+            // A formula half typed stays being typed through a `top` of its own sheet, which only scrolls; one of another
+            // sheet is refused, changing nothing; only `at` enters it.
+            show(&mut s, r#"{"top":{"sheet":1,"row":1,"column":1},"at":{"sheet":1,"row":2,"column":2}}"#).unwrap();
+            s.type_text("=VLOOKUP(");
+            let typed = |s: &mut Scenario| s.with(|e, _| e.cell_edit().map(|c| (c.row, c.column, c.text.clone())));
+            assert_eq!(typed(&mut s), Some((1, 1, "=VLOOKUP(".to_string())), "the formula is being typed");
+            let revision = s.with(|e, _| e.document.revision());
+            show(&mut s, r#"{"top":{"sheet":1,"row":40,"column":1}}"#).unwrap();
+            assert_eq!(place(&mut s).top, Top::Cell { sheet: 1, row: 40, column: 1 }, "scrolled");
+            assert_eq!(typed(&mut s), Some((1, 1, "=VLOOKUP(".to_string())), "a top of the same sheet leaves the formula being typed");
+            let before = scroll(&mut s);
+            assert!(show(&mut s, r#"{"top":{"sheet":0,"row":1,"column":1}}"#).is_err(), "another sheet while typing is refused");
+            assert_eq!(typed(&mut s), Some((1, 1, "=VLOOKUP(".to_string())), "a refused show leaves the formula being typed");
+            assert_eq!(s.with(|e, _| e.presentation().slide_index(e.current_slide)), Some(1), "a refused show changes nothing");
+            assert_eq!((scroll(&mut s), s.with(|e, _| e.document.revision())), (before, revision), "a refused show changes nothing");
+            s.key("escape");
+            assert_eq!(typed(&mut s), None);
+        }
+
+        // Split panes (表示 > 分割) scroll in their own way: no place is told or shown, and a `show` there is refused
+        // before anything changes.
         s.update(|e, _, _| {
             let slide = e.current_slide;
             e.document.execute(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::Split { slide, split: Some((2, 3)) })]).expect("split");
         });
         assert_eq!(s.with(|e, _| e.agent_place()), None);
         assert!(show(&mut s, r#"{"top":{"sheet":1,"row":10,"column":1}}"#).is_err());
+        show(&mut s, r#"{"top":{"sheet":0,"row":1,"column":1}}"#).unwrap();
+        if !view {
+            s.update(|e, _, cx| {
+                e.set_cell(0, 0);
+                cx.notify();
+            });
+            s.type_text("=SUM(");
+            let typing = s.with(|e, _| e.cell_edit().map(|c| c.text.clone()));
+            assert_eq!(typing.as_deref(), Some("=SUM("));
+            assert!(show(&mut s, r#"{"top":{"sheet":1,"row":10,"column":1},"at":{"sheet":1,"row":3,"column":3}}"#).is_err());
+            assert_eq!(s.with(|e, _| e.cell_edit().map(|c| c.text.clone())), typing, "a refused show enters nothing");
+            assert_eq!(s.with(|e, _| e.presentation().slide_index(e.current_slide)), Some(0), "a refused show shows no other sheet");
+            s.key("escape");
+        }
     }
+}
+
+/// The person's input is noted before any element that handles it can stop it: the formula bar's splitter takes the drag
+/// that resizes it in the capture phase and stops it there. A touch drag and a pinch are input too.
+fn person_input_seen_first() {
+    let mut s = open_made(Kind::Workbook, "input.xlsx", r#"[{"op": "set_cells", "sheet": "Sheet1", "at": "A1", "values": [["x"]]}]"#, false);
+    s.update(|e, _, cx| e.toggle_formula_bar_expanded(cx));
+    s.settle();
+    let bar = s.with(|e, _| e.wb().bar_bounds.get()).expect("the formula bar");
+    // The splitter is the first row under the bar's text whose drag resizes the bar.
+    let resized = (0..16).any(|dy| {
+        let at = point(bar.center().x, bar.bottom() + px(dy as f32));
+        s.dispatch(vec![
+            PlatformInput::MouseMove(MouseMoveEvent { position: at, ..Default::default() }),
+            PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position: at, click_count: 1, ..Default::default() }),
+        ]);
+        assert!(s.update(|e, _, _| e.take_person_input()), "the press is noted");
+        let to = point(at.x, at.y + px(40.0));
+        s.dispatch(vec![PlatformInput::MouseMove(MouseMoveEvent { position: to, pressed_button: Some(MouseButton::Left), ..Default::default() })]);
+        let noted = s.update(|e, _, _| e.take_person_input());
+        let resized = s.with(|e, _| e.wb().bar_bounds.get()).expect("the formula bar").size.height > bar.size.height + px(20.0);
+        if resized {
+            assert!(noted, "the drag the splitter stopped is noted");
+        }
+        s.dispatch(vec![PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Left, position: to, click_count: 1, ..Default::default() })]);
+        let _ = s.update(|e, _, _| e.take_person_input());
+        resized
+    });
+    assert!(resized, "the splitter under the bar {bar:?} takes a drag");
+
+    let start = point(px(400.0), px(400.0));
+    s.dispatch(vec![PlatformInput::TouchDrag(TouchDragEvent { phase: TouchPhase::Moved, start_position: start, position: point(px(400.0), px(300.0)) })]);
+    assert!(s.update(|e, _, _| e.take_person_input()), "a touch drag is noted");
+    s.pinch((400.0, 400.0), 0.1);
+    assert!(s.update(|e, _, _| e.take_person_input()), "a pinch is noted");
 }

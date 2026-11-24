@@ -85,17 +85,42 @@ impl SlideEditor {
     /// Where the person is (`Place`), in JSON, when it is not the place last told or shown: the embedding page shows it in
     /// the other editor of two side by side. A place this editor was asked to show is not told back, so two editors that
     /// follow each other do not answer each other's moves.
+    /// Meant to be read once a frame (`www/main.ts`).
     pub fn agent_place_changed(&mut self) -> Option<String> {
-        // Read once the editor has drawn what the person's input did (the drawing follows the input).
-        if !self.agent_place_drawn || !self.agent_person_input.get() {
+        if self.agent_person_input.take() {
+            self.agent_input_frames = PERSON_INPUT_FRAMES;
+        }
+        let input_frames = self.agent_input_frames;
+        self.agent_input_frames = input_frames.saturating_sub(1);
+        // The drawing follows what moved the place: a frame drawn after the input may still show the place before it.
+        if !std::mem::take(&mut self.agent_place_drawn) {
             return None;
         }
-        self.agent_place_drawn = false;
-        self.agent_person_input.set(false);
         let place = serde_json::to_string(&self.agent_place()?).expect("serialisable");
-        if self.agent_told_place.as_deref() == Some(place.as_str()) {
+        // The place shown is the one drawn: a `top` past the end is pulled back only when the view is laid out.
+        if std::mem::take(&mut self.agent_showing) {
+            self.agent_input_frames = 0;
+            self.agent_told_place = Some(place);
             return None;
         }
+        if input_frames == 0 || self.agent_told_place.as_deref() == Some(place.as_str()) {
+            return None;
+        }
+        self.agent_input_frames = 0;
+        self.agent_told_place = Some(place.clone());
+        Some(place)
+    }
+
+    /// Whether the person's input was noted since this was last asked, for a scenario to tell an input seen from one
+    /// another element stopped.
+    #[cfg(feature = "scenarios")]
+    pub fn take_person_input(&mut self) -> bool {
+        self.agent_person_input.take()
+    }
+
+    /// Where the document is open, in JSON, taken as told: the embedding page is given it with `ready`.
+    pub fn agent_place_opened(&mut self) -> Option<String> {
+        let place = serde_json::to_string(&self.agent_place()?).expect("serialisable");
         self.agent_told_place = Some(place.clone());
         Some(place)
     }
@@ -110,8 +135,8 @@ impl SlideEditor {
             return Ok(());
         }
         with_format!(self, agent_show(self, show.top, show.at, window, cx))?;
+        self.agent_showing = true;
         cx.notify();
-        self.agent_told_place = self.agent_place().map(|p| serde_json::to_string(&p).expect("serialisable"));
         Ok(())
     }
 
@@ -188,9 +213,16 @@ struct Show {
     at: Option<At>,
 }
 
-/// An element of no size that notes the person's mouse input to the window: a button pressed, a drag (a selection, a
-/// scroll bar), the wheel. Seen before the elements that handle it, which may stop it going further. (Keys are noted
-/// where the editor sees every keystroke of its window first: `SlideEditor::new`.)
+/// How many frames after the person's last input a changed place is still theirs: a drag's or a wheel's place may be drawn
+/// a frame or more after the input that moved it.
+pub const PERSON_INPUT_FRAMES: u8 = 30;
+
+/// An element of no size that notes the person's pointer input to the window: a button pressed, a drag (a selection, a
+/// scroll bar), the wheel, a touch drag, a pinch.
+///
+/// Capture listeners run in the order they were painted and any may stop the event, so this must be the editor root's
+/// first child: only the root's own listeners come before it, and those note the input themselves. (Keys are noted where
+/// the editor sees every keystroke of its window first: `SlideEditor::new`.)
 pub(crate) fn person_input_watch(input: Rc<Cell<bool>>) -> impl IntoElement {
     canvas(
         |_, _, _| {},
@@ -215,6 +247,10 @@ pub(crate) fn person_input_watch(input: Rc<Cell<bool>>) -> impl IntoElement {
             window.on_mouse_event(move |_: &MouseUpEvent, phase, _, _| up(phase));
             let wheel = noted(&input);
             window.on_mouse_event(move |_: &ScrollWheelEvent, phase, _, _| wheel(phase));
+            let touch = noted(&input);
+            window.on_mouse_event(move |_: &TouchDragEvent, phase, _, _| touch(phase));
+            let pinch = noted(&input);
+            window.on_mouse_event(move |_: &PinchEvent, phase, _, _| pinch(phase));
         },
     )
     .absolute()

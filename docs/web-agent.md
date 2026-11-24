@@ -24,7 +24,8 @@ The editor answers only its parent window, at the origin given explicitly with `
 
 A refused request is answered `{ ok: false, error }`, and nothing changed. An `apply` of an empty list is done, changing
 nothing. Once the document is open and drawn the editor posts
-`{ source: 'ibisoffice-agent', type: 'ready' }`; every request is answered from then on.
+`{ source: 'ibisoffice-agent', type: 'ready', place }`; every request is answered from then on. `place` is where the
+document opened (see [Two editors side by side](#two-editors-side-by-side)), left out for a kind of file with no places.
 
 `?open=message` takes the document from the parent instead of a URL: the editor posts `{ source: 'ibisoffice-agent', type:
 'need-file' }`, and the parent answers `{ source: 'ibisoffice-agent', type: 'file', name, bytes }` (`bytes` an `ArrayBuffer`).
@@ -191,9 +192,10 @@ of a workbook (hidden ones counted: `number` − 1) and a cell.
 
 As the person scrolls, moves the caret or selects, the editor posts `{ source: 'ibisoffice-agent', type: 'place', place:
 { top, at } }`: at most once a frame, and only when the place changed. A `place` is the person's move: it is posted only
-after their own input to the editor (the mouse or a touch, the wheel, a key). The place the document opens at is not
-posted (it is taken as told when `ready` is posted), nor a place moved without the person: by an `apply` (blocks added
-above the view), by the pages laid out again (fonts or pictures that came in), by a `show`.
+after their own input to the editor (the mouse or a touch, the wheel, a key), within half a second of it. The place the
+document opens at is not posted: it comes with `ready` (`{ type: 'ready', place: { top, at } }`, the same shape), taken
+before any input. Nor is a place moved without the person: by an `apply` (blocks added above the view), by the pages laid
+out again (fonts or pictures that came in), by a `show`.
 
 | Kind | `top`: what is at the view's top edge | `at`: where the caret or the selection is, or `null` |
 | --- | --- | --- |
@@ -215,9 +217,14 @@ select and scroll there, and nothing is edited.
 - A place past the end is taken as the last there is: the last block, slide or sheet, a row or column past the sheet's
   last (1048576, 16384) the last, a shape past the slide's none. A place of another kind of file is refused (`{ ok:
   false, error }`), as is a sheet that is hidden or a chart sheet, which no editor shows.
-- What the person was typing (a cell, a shape's text) is entered first.
-- The place a `show` puts the editor at is not posted back, so two editors that follow each other do not answer each
-  other's moves: the next `place` posted is the person's own next move.
+- Only `at` ends what the person is typing (a cell, a shape's text): it is entered first. A `show` with only `top`
+  scrolls and leaves the typing going on (a formula half typed stays being typed); one that would need another sheet or
+  slide shown while the person types is refused, and changes nothing.
+- A refused `show` changes nothing.
+- The place a `show` puts the editor at, as drawn (a `top` past the end pulled back), is not posted back, so two editors
+  that follow each other do not answer each other's moves: the next `place` posted is the person's own next move.
+- A page that keeps a translation beside its original may show the translation only the original's `top`, and the
+  original both: the caret and the selection stay the person's own in the editor they type in.
 - A document whose pages move side by side (表示 > ページの移動 > 左右), and a sheet shown in the page layout view
   (ページ レイアウト) or split into panes (表示 > 分割; frozen panes are not split ones), post no place and refuse `top` and
   `at`.
