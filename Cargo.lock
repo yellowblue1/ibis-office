@@ -3265,7 +3265,6 @@ dependencies = [
  "ibis-pptx",
  "serde",
  "serde_json",
- "wasm-bindgen",
 ]
 
 [[package]]

@@ -3,15 +3,16 @@
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! An agent's edits on a file, with no window:
 //!
-//!   ibis-agent inspect <file.pptx> [--name <name>]
-//!   ibis-agent apply <file.pptx> <ops.json | -> [-o <out.pptx>]
-//!   ibis-agent new <out.pptx>
+//!   ibis-agent inspect <file> [--name <name>]
+//!   ibis-agent apply <file> <ops.json | -> [-o <out>]
+//!   ibis-agent new <out.pptx | out.docx | out.xlsx>
 //!
-//! `inspect` prints the summary the browser version's `inspect` gives, naming the file `<name>` when given (a server keeps a
-//! file under a name of its own). `apply` applies the operations (a JSON array; `-`
-//! reads it from standard input) as one step and writes the file (over itself without `-o`), then prints
-//! `{"replaced": n, "document": <inspect of the file written>}`; when they are refused it writes nothing, prints `{"error": …}` and exits
-//! with 1. `new` writes an empty presentation (one title slide).
+//! A file is a presentation, a document or a workbook (`.pptx`, `.docx`, `.xlsx`), told by its content. `inspect`
+//! prints the summary the browser version's `inspect` gives, naming the file `<name>` when given (a server keeps a file
+//! under a name of its own). `apply` applies the operations (a JSON array; `-` reads it from standard input) as one step
+//! and writes the file (over itself without `-o`), then prints `{"replaced": n, "document": <inspect of the file
+//! written>}`; when they are refused it writes nothing, prints `{"error": …}` and exits with 1. `new` writes an empty file
+//! of the kind its name's extension names.
 
 use std::io::Read;
 use std::process::ExitCode;
@@ -43,7 +44,7 @@ fn run(args: &[String]) -> Result<serde_json::Value, serde_json::Value> {
             Ok(serde_json::to_value(session.inspect()).expect("serialisable"))
         }
         [cmd, out] if cmd == "new" => {
-            let bytes = ibis_pptx::blank_file(ibis_pptx::Kind::Presentation).map_err(|e| text(e.to_string()))?;
+            let bytes = ibis_agent::blank(out).map_err(text)?;
             std::fs::write(out, bytes).map_err(|e| text(format!("{out}: {e}")))?;
             Ok(serde_json::json!({ "written": out }))
         }
@@ -60,16 +61,15 @@ fn run(args: &[String]) -> Result<serde_json::Value, serde_json::Value> {
             } else {
                 std::fs::read_to_string(ops).map_err(|e| text(format!("{ops}: {e}")))?
             };
-            let ops = ibis_agent::parse_ops(&json).map_err(text)?;
             let mut session = open(file).map_err(text)?;
-            let created = session.apply(&ops).map_err(|e| serde_json::to_value(e).expect("serialisable"))?;
+            let ops = ibis_agent::parse_ops(session.kind(), &json).map_err(text)?;
+            let applied = session.apply(&ops).map_err(|e| serde_json::to_value(e).expect("serialisable"))?;
             let bytes = session.save().map_err(text)?;
             std::fs::write(&out, bytes).map_err(|e| text(format!("{out}: {e}")))?;
             // Ids are numbered as a file is read: those of what was made are told by the file as it is read again, not by
             // `created`.
-            let replaced: usize = created.iter().filter_map(|c| c.replaced).sum();
             let reread = open(&out).map_err(text)?;
-            Ok(serde_json::json!({ "replaced": replaced, "document": reread.inspect() }))
+            Ok(serde_json::json!({ "replaced": applied.replaced, "document": reread.inspect() }))
         }
         _ => Err(text(usage())),
     }
@@ -82,5 +82,5 @@ fn open(path: &str) -> Result<ibis_agent::Session, String> {
 }
 
 fn usage() -> String {
-    "usage: ibis-agent inspect <file.pptx> [--name <name>] | apply <file.pptx> <ops.json|-> [-o <out.pptx>] | new <out.pptx>".into()
+    "usage: ibis-agent inspect <file> [--name <name>] | apply <file> <ops.json|-> [-o <out>] | new <out.pptx|out.docx|out.xlsx>".into()
 }

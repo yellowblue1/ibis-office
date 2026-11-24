@@ -17,6 +17,8 @@ use ibis_doc_model::{Document, Table};
 use ibis_pptx::Source;
 use serde::{Deserialize, Serialize};
 
+use crate::{OpError, Planned};
+
 /// A slide or a shape: its id, or the `as` name of one made earlier in the same list; a shape also as the placeholder
 /// of its slide it is (`{"placeholder": "title"}`: `title`, `body`, `subTitle`…), for the slide just added.
 #[derive(Clone, Debug, Deserialize)]
@@ -194,31 +196,6 @@ pub struct Created {
     pub replaced: Option<usize>,
 }
 
-/// Why a list of operations was refused (nothing of it was applied). `index` is the operation's, when one failed.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct OpError {
-    pub index: Option<usize>,
-    pub message: String,
-}
-
-impl std::fmt::Display for OpError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.index {
-            Some(i) => write!(f, "operation {i}: {}", self.message),
-            None => f.write_str(&self.message),
-        }
-    }
-}
-
-/// The commands for a list of operations, for the editor to execute as one step, and what each operation made.
-#[derive(Debug)]
-pub struct Planned {
-    pub commands: Vec<Command>,
-    pub created: Vec<Created>,
-    /// The slide the last operation worked on, when it is still there: what the editor shows after.
-    pub shown: Option<SlideId>,
-}
-
 /// Turn `ops` into commands on `current`, opened from `source`. Each operation sees what the ones before it did; the
 /// result is saved (and the bytes thrown away) to make sure the file can be written with it. `new_id` gives a fresh id
 /// (the editor's document's: `Document::ids`), for the slides and shapes made.
@@ -245,11 +222,11 @@ pub fn plan(ops: &[Op], current: &Presentation, source: &Source, new_id: &mut dy
         commands.extend(step);
         created.push(made);
     }
-    source
-        .save(scratch.presentation(), ibis_pptx::SaveOptions::default())
-        .map_err(|e| OpError { index: None, message: format!("the file cannot be saved with this change: {e}") })?;
+    crate::check_saves(source, scratch.presentation())?;
     let shown = shown.filter(|&id| scratch.presentation().slide(id).is_some());
-    Ok(Planned { commands, created, shown })
+    let replaced = created.iter().filter_map(|c| c.replaced).sum();
+    let created = created.iter().map(|c| serde_json::to_value(c).expect("serialisable")).collect();
+    Ok(Planned { commands, created, replaced, shown })
 }
 
 #[derive(Clone, Copy, Debug)]

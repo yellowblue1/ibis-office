@@ -17,9 +17,8 @@ use crate::format::with_format;
 impl SlideEditor {
     /// The document as the agent reads it (`ibis_agent::inspect`), in JSON.
     pub fn agent_inspect(&self) -> Result<String, String> {
-        self.agent_source()?;
-        let name = self.file_name.as_deref().unwrap_or_default();
-        Ok(serde_json::to_string(&ibis_agent::inspect(self.presentation(), name, self.document.is_dirty())).expect("serialisable"))
+        let source = self.agent_source()?;
+        Ok(serde_json::to_string(&self.agent_summary(&source)).expect("serialisable"))
     }
 
     /// Whether there are changes not saved, and a count that changes with every edit, undo and redo, in JSON: cheap, for
@@ -33,7 +32,7 @@ impl SlideEditor {
     /// the document after, in JSON; nothing changes when they are refused.
     pub fn agent_apply(&mut self, ops: &str, window: &mut Window, cx: &mut Context<Self>) -> Result<String, String> {
         let source = self.agent_source()?;
-        let ops = ibis_agent::parse_ops(ops)?;
+        let ops = ibis_agent::parse_ops(source.kind(), ops)?;
         if self.is_read_only() {
             return Err("the document is open read-only".into());
         }
@@ -54,7 +53,7 @@ impl SlideEditor {
             with_format!(self, clear_page_selection(self));
         }
         cx.notify();
-        let document = ibis_agent::inspect(self.presentation(), self.file_name.as_deref().unwrap_or_default(), self.document.is_dirty());
+        let document = self.agent_summary(&source);
         Ok(serde_json::json!({ "created": planned.created, "document": document }).to_string())
     }
 
@@ -72,12 +71,15 @@ impl SlideEditor {
         Ok((self.file_name.as_deref().unwrap_or_default().to_string(), bytes))
     }
 
-    /// The file the document was opened from: only an opened presentation is edited by the agent.
+    fn agent_summary(&self, source: &ibis_pptx::Source) -> ibis_agent::Summary {
+        ibis_agent::inspect(source.kind(), self.presentation(), self.file_name.as_deref().unwrap_or_default(), self.document.is_dirty())
+    }
+
+    /// The file the document was opened from: only an opened file is edited by the agent.
     fn agent_source(&self) -> Result<Arc<ibis_pptx::Source>, String> {
         match &self.source {
-            Some(source) if source.kind() == ibis_pptx::Kind::Presentation && self.has_document => Ok(source.clone()),
-            Some(_) => Err("only presentations (.pptx) can be edited by the agent yet".into()),
-            None => Err("no document is open".into()),
+            Some(source) if self.has_document => Ok(source.clone()),
+            _ => Err("no document is open".into()),
         }
     }
 }

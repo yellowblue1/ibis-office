@@ -2,18 +2,22 @@
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 
-use super::*;
+use crate::{Applied, OpError, Ops, Session};
 
 fn blank() -> Session {
-    Session::open(ibis_pptx::blank_file(ibis_pptx::Kind::Presentation).unwrap(), "new.pptx").unwrap()
+    Session::open(crate::blank("new.pptx").unwrap(), "new.pptx").unwrap()
 }
 
-fn apply(session: &mut Session, json: &str) -> Result<Vec<Created>, OpError> {
+fn parse_ops(json: &str) -> Result<Ops, String> {
+    crate::parse_ops(ibis_pptx::Kind::Presentation, json)
+}
+
+fn apply(session: &mut Session, json: &str) -> Result<Applied, OpError> {
     session.apply(&parse_ops(json).unwrap())
 }
 
 fn texts(session: &Session) -> Vec<Vec<Vec<String>>> {
-    session.inspect().slides.iter().map(|s| s.shapes.iter().filter_map(|sh| sh.text.clone()).collect()).collect()
+    session.inspect().into_presentation().slides.iter().map(|s| s.shapes.iter().filter_map(|sh| sh.text.clone()).collect()).collect()
 }
 
 fn paragraphs(list: &[&str]) -> Vec<String> {
@@ -24,7 +28,7 @@ fn paragraphs(list: &[&str]) -> Vec<String> {
 #[test]
 fn inspect_names_slides_shapes_and_layouts() {
     let session = blank();
-    let doc = session.inspect();
+    let doc = session.inspect().into_presentation();
     assert_eq!(doc.slides.len(), 1);
     assert!(doc.layouts.contains(&"タイトルとコンテンツ".to_string()), "{:?}", doc.layouts);
     let kinds: Vec<_> = doc.slides[0].shapes.iter().filter_map(|s| s.placeholder.clone()).collect();
@@ -39,7 +43,7 @@ fn inspect_names_slides_shapes_and_layouts() {
 #[test]
 fn a_slide_made_and_filled_is_one_undo_and_saves() {
     let mut session = blank();
-    let before = session.presentation().clone();
+    let before = session.model().clone();
     let created = apply(
         &mut session,
         r#"[
@@ -51,10 +55,10 @@ fn a_slide_made_and_filled_is_one_undo_and_saves() {
         ]"#,
     )
     .unwrap();
-    assert_eq!(created.len(), 5);
-    let slide = created[0].slide.unwrap();
-    assert_eq!(created[3].slide, Some(slide));
-    let doc = session.inspect();
+    assert_eq!(created.created.len(), 5);
+    let slide = created.created[0]["slide"].as_u64().unwrap();
+    assert_eq!(created.created[3]["slide"].as_u64(), Some(slide));
+    let doc = session.inspect().into_presentation();
     assert_eq!(doc.slides.len(), 2);
     assert_eq!(doc.slides[1].layout.as_deref(), Some("タイトルとコンテンツ"));
     assert_eq!(texts(&session)[1][..2], [paragraphs(&["本日の議題"]), paragraphs(&["背景", "提案", "予定"])]);
@@ -65,11 +69,11 @@ fn a_slide_made_and_filled_is_one_undo_and_saves() {
     let saved = session.save().unwrap();
     let again = Session::open(saved, "saved.pptx").unwrap();
     assert_eq!(texts(&again)[1][..2], texts(&session)[1][..2]);
-    let table = again.inspect().slides[1].shapes.iter().find(|s| s.kind == "table").unwrap().cells.clone().unwrap();
+    let table = again.inspect().into_presentation().slides[1].shapes.iter().find(|s| s.kind == "table").unwrap().cells.clone().unwrap();
     assert_eq!(table, vec![vec![paragraphs(&["項目"]), paragraphs(&["期日"])], vec![paragraphs(&["試作"]), paragraphs(&["11月"])]]);
 
     assert!(session.document.undo());
-    assert_eq!(session.presentation().slides, before.slides);
+    assert_eq!(session.model().slides, before.slides);
     assert!(!session.document.can_undo());
 }
 
@@ -78,7 +82,7 @@ fn a_slide_made_and_filled_is_one_undo_and_saves() {
 #[test]
 fn text_is_read_and_written_as_the_same_paragraphs() {
     let mut session = blank();
-    let slide = session.inspect().slides[0].id;
+    let slide = session.inspect().into_presentation().slides[0].id;
     apply(
         &mut session,
         &format!(
@@ -87,17 +91,17 @@ fn text_is_read_and_written_as_the_same_paragraphs() {
         ),
     )
     .unwrap();
-    let doc = session.inspect();
+    let doc = session.inspect().into_presentation();
     let subtitle = doc.slides[0].shapes.iter().find(|s| s.placeholder.as_deref() == Some("subTitle")).unwrap();
     assert_eq!(subtitle.text.clone().unwrap(), paragraphs(&["Empowering teams", "", "[Date / Presenter]"]));
-    let body = session.presentation().slides[0].shapes.iter().find(|s| s.id.0 == subtitle.id).unwrap().text_body().unwrap();
+    let body = session.model().slides[0].shapes.iter().find(|s| s.id.0 == subtitle.id).unwrap().text_body().unwrap();
     assert_eq!(body.paragraphs.len(), 3);
     assert_eq!(doc.slides[0].shapes.iter().find(|s| s.kind == "table").unwrap().cells.as_ref().unwrap()[0][0], paragraphs(&["one", "two"]));
 
     let json = serde_json::to_string(&subtitle.text).unwrap();
-    let before = session.presentation().slides.clone();
+    let before = session.model().slides.clone();
     apply(&mut session, &format!(r#"{{"op": "set_text", "slide": {slide}, "shape": {}, "text": {json}}}"#, subtitle.id)).unwrap();
-    assert_eq!(session.presentation().slides, before);
+    assert_eq!(session.model().slides, before);
 }
 
 /// A paragraph holds no line break: one is refused with where it is, so a paragraph is never split by a character
@@ -129,11 +133,11 @@ fn the_revision_tells_every_change() {
 #[test]
 fn a_failing_operation_changes_nothing() {
     let mut session = blank();
-    let before = session.presentation().clone();
+    let before = session.model().clone();
     let err = apply(&mut session, r#"[{"op": "add_slide"}, {"op": "set_text", "slide": 999, "shape": 1, "text": ["x"]}]"#).unwrap_err();
     assert_eq!(err.index, Some(1));
     assert!(err.message.contains("no slide 999"), "{err}");
-    assert_eq!(session.presentation().slides, before.slides);
+    assert_eq!(session.model().slides, before.slides);
     assert!(!session.document.can_undo());
 }
 
@@ -148,13 +152,13 @@ fn unknown_operations_and_fields_are_refused_by_name() {
 #[test]
 fn set_text_keeps_the_format_of_what_it_replaces() {
     let mut session = blank();
-    let slide = session.inspect().slides[0].id;
+    let slide = session.inspect().into_presentation().slides[0].id;
     apply(&mut session, &format!(r##"[{{"op": "set_text", "slide": {slide}, "shape": {{"placeholder": "title"}}, "text": ["旧"]}}, {{"op": "format_text", "slide": {slide}, "shape": {{"placeholder": "title"}}, "format": {{"bold": true, "size": 40, "color": "#C00000"}}}}]"##)).unwrap();
     apply(&mut session, &format!(r#"{{"op": "set_text", "slide": {slide}, "shape": {{"placeholder": "title"}}, "text": ["新しい見出し"]}}"#)).unwrap();
-    let title = session.presentation().slides[0].shapes.iter().find(|s| s.text_body().is_some_and(|b| b.text() == "新しい見出し")).unwrap();
+    let title = session.model().slides[0].shapes.iter().find(|s| s.text_body().is_some_and(|b| b.text() == "新しい見出し")).unwrap();
     let run = &title.text_body().unwrap().paragraphs[0].runs[0];
     assert_eq!((run.style.bold, run.style.font_size, run.style.color), (Some(true), Some(4000), Some(ibis_doc_model::drawing::Rgb(0xC00000))));
-    assert_eq!(session.inspect().slides[0].shapes.iter().find(|s| s.text == Some(paragraphs(&["新しい見出し"]))).unwrap().font_size, Some(40.0));
+    assert_eq!(session.inspect().into_presentation().slides[0].shapes.iter().find(|s| s.text == Some(paragraphs(&["新しい見出し"]))).unwrap().font_size, Some(40.0));
 }
 
 /// Replace text goes through shapes and table cells of every slide, and says how many it replaced; none found is an
@@ -162,7 +166,7 @@ fn set_text_keeps_the_format_of_what_it_replaces() {
 #[test]
 fn replace_text_in_shapes_and_cells() {
     let mut session = blank();
-    let slide = session.inspect().slides[0].id;
+    let slide = session.inspect().into_presentation().slides[0].id;
     apply(
         &mut session,
         &format!(
@@ -172,8 +176,8 @@ fn replace_text_in_shapes_and_cells() {
     )
     .unwrap();
     let created = apply(&mut session, r#"{"op": "replace_text", "find": "A社", "replace": "イビス"}"#).unwrap();
-    assert_eq!(created[0].replaced, Some(3));
-    let doc = session.inspect();
+    assert_eq!(created.replaced, 3);
+    let doc = session.inspect().into_presentation();
     assert!(doc.slides[0].shapes.iter().any(|s| s.text == Some(paragraphs(&["イビスの提案 イビス"]))));
     assert_eq!(doc.slides[0].shapes.iter().find(|s| s.kind == "table").unwrap().cells.as_ref().unwrap()[0], [paragraphs(&["イビス"]), paragraphs(&["B社"])]);
     let err = apply(&mut session, r#"{"op": "replace_text", "find": "A社", "replace": "x"}"#).unwrap_err();
@@ -184,7 +188,7 @@ fn replace_text_in_shapes_and_cells() {
 #[test]
 fn slide_and_shape_operations_save() {
     let mut session = blank();
-    let first = session.inspect().slides[0].id;
+    let first = session.inspect().into_presentation().slides[0].id;
     let created = apply(
         &mut session,
         &format!(
@@ -200,35 +204,35 @@ fn slide_and_shape_operations_save() {
         ),
     )
     .unwrap();
-    let doc = session.inspect();
+    let doc = session.inspect().into_presentation();
     assert_eq!(doc.slides.len(), 3);
-    assert_eq!(doc.slides[0].id, created[0].slide.unwrap());
-    let shape = doc.slides[0].shapes.iter().find(|s| s.id == created[1].shape.unwrap()).unwrap();
+    assert_eq!(doc.slides[0].id, created.created[0]["slide"].as_u64().unwrap());
+    let shape = doc.slides[0].shapes.iter().find(|s| s.id == created.created[1]["shape"].as_u64().unwrap()).unwrap();
     assert_eq!((shape.x, shape.y, shape.w, shape.h), (120.0, 100.0, 240.0, 80.0));
     assert_eq!((shape.geometry.as_deref(), shape.fill.as_deref()), (Some("roundRect"), Some("#FFC000")));
     assert_eq!(doc.slides[1].background.as_deref(), Some("#F2F2F2"));
 
     let again = Session::open(session.save().unwrap(), "saved.pptx").unwrap();
-    let reread = again.inspect();
+    let reread = again.inspect().into_presentation();
     assert_eq!(reread.slides.len(), 3);
     let texts: Vec<_> = reread.slides[0].shapes.iter().filter_map(|s| s.text.clone()).collect();
     assert_eq!(texts, [paragraphs(&["要点"]), paragraphs(&["注記", "補足"])]);
 
-    let delete = format!(r#"[{{"op": "delete_shape", "slide": {}, "shape": {}}}, {{"op": "delete_slide", "slide": {first}}}]"#, created[0].slide.unwrap(), created[1].shape.unwrap());
+    let delete = format!(r#"[{{"op": "delete_shape", "slide": {}, "shape": {}}}, {{"op": "delete_slide", "slide": {first}}}]"#, created.created[0]["slide"].as_u64().unwrap(), created.created[1]["shape"].as_u64().unwrap());
     apply(&mut session, &delete).unwrap();
-    assert_eq!(session.inspect().slides.len(), 2);
-    assert_eq!(session.inspect().slides[0].shapes.len(), 1);
+    assert_eq!(session.inspect().into_presentation().slides.len(), 2);
+    assert_eq!(session.inspect().into_presentation().slides[0].shapes.len(), 1);
 }
 
 #[test]
 fn table_rows_are_inserted_and_deleted() {
     let mut session = blank();
-    let slide = session.inspect().slides[0].id;
+    let slide = session.inspect().into_presentation().slides[0].id;
     let created = apply(&mut session, &format!(r#"{{"op": "add_table", "slide": {slide}, "rows": [[["a"], ["b"]], [["c"], ["d"]]]}}"#)).unwrap();
-    let table = created[0].shape.unwrap();
+    let table = created.created[0]["shape"].as_u64().unwrap();
     apply(&mut session, &format!(r#"[{{"op": "insert_table_row", "slide": {slide}, "shape": {table}, "at": 1}}, {{"op": "set_cell", "slide": {slide}, "shape": {table}, "row": 1, "column": 0, "text": ["new"]}}]"#)).unwrap();
     let cells = |s: &Session| -> Vec<Vec<String>> {
-        let cells = s.inspect().slides[0].shapes.iter().find(|s| s.kind == "table").unwrap().cells.clone().unwrap();
+        let cells = s.inspect().into_presentation().slides[0].shapes.iter().find(|s| s.kind == "table").unwrap().cells.clone().unwrap();
         cells.into_iter().map(|row| row.into_iter().map(|cell| cell.join("|")).collect()).collect()
     };
     assert_eq!(cells(&session), vec![vec!["a", "b"], vec!["new", ""], vec!["c", "d"]]);
@@ -244,8 +248,8 @@ fn reading_the_same_file_gives_the_same_ids() {
     let mut session = blank();
     apply(&mut session, r#"{"op": "add_slide", "layout": "タイトルとコンテンツ"}"#).unwrap();
     let bytes = session.save().unwrap();
-    let a = Session::open(bytes.clone(), "a.pptx").unwrap().inspect();
-    let b = Session::open(bytes, "a.pptx").unwrap().inspect();
+    let a = Session::open(bytes.clone(), "a.pptx").unwrap().inspect().into_presentation();
+    let b = Session::open(bytes, "a.pptx").unwrap().inspect().into_presentation();
     assert_eq!(serde_json::to_string(&a).unwrap(), serde_json::to_string(&b).unwrap());
 }
 
@@ -254,7 +258,7 @@ fn reading_the_same_file_gives_the_same_ids() {
 #[test]
 fn a_change_the_file_cannot_save_is_refused() {
     let mut session = blank();
-    let before = session.presentation().slides.clone();
+    let before = session.model().slides.clone();
     let first = before[0].id.0;
     for json in [
         r##"[{"op": "add_slide", "as": "n"}, {"op": "set_background", "slide": "n", "color": "#000000"}]"##.to_string(),
@@ -263,14 +267,14 @@ fn a_change_the_file_cannot_save_is_refused() {
         let err = apply(&mut session, &json).unwrap_err();
         assert_eq!(err.index, None);
         assert!(err.message.starts_with("the file cannot be saved with this change"), "{err}");
-        assert_eq!(session.presentation().slides, before);
+        assert_eq!(session.model().slides, before);
     }
 }
 
 #[test]
 fn bad_values_are_refused_with_what_is_wrong() {
     let mut session = blank();
-    let slide = session.inspect().slides[0].id;
+    let slide = session.inspect().into_presentation().slides[0].id;
     for (json, wanted) in [
         (format!(r#"{{"op": "set_background", "slide": {slide}, "color": "red"}}"#), "not a colour"),
         (format!(r#"{{"op": "add_shape", "slide": {slide}, "geometry": "blob", "frame": {{"x": 0, "y": 0, "w": 1, "h": 1}}}}"#), "no preset shape"),
