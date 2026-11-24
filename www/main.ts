@@ -559,7 +559,8 @@ function listenToAgent(): void {
 /**
  * Where the person is (scrolled to, and their caret or selection), told to the parent window as it changes, at most once a
  * frame: `{ source: 'ibisoffice-agent', type: 'place', place: { top, at } }`, for a page that keeps two editors side by
- * side at the same place. A place the parent had shown (`show`) is not told back.
+ * side at the same place. A place the parent had shown (`show`) is not told back. The editor looks at its place only after
+ * it was drawn, so a frame with nothing drawn costs a call and no more.
  */
 function tellPlace(origin: string): void {
   const frame = () => {

@@ -16,7 +16,41 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("shell::side_by_side_place_of_a_document", place_of_a_document),
         ("shell::side_by_side_place_of_a_presentation", place_of_a_presentation),
         ("shell::side_by_side_place_of_a_workbook", place_of_a_workbook),
+        ("shell::side_by_side_place_of_large_files", place_of_large_files),
     ]
+}
+
+/// What one reading of the place costs in a long document and a big workbook (printed), and that the page's reading
+/// every frame costs nothing while the editor draws nothing.
+fn place_of_large_files() {
+    let paragraph = format!("\"{}\"", "A sentence of a long specification, as many of them as fill a page. ".repeat(6));
+    let paragraphs = vec![paragraph; 2000].join(",");
+    let ops = format!(r#"[{{"op":"insert_paragraphs","text":[{paragraphs}]}}]"#);
+    let row = format!("[{}]", (0..20).map(|c| format!("\"cell {c}\"")).collect::<Vec<_>>().join(","));
+    let rows = vec![row; 5000].join(",");
+    let sheet_ops = format!(r#"[{{"op":"set_cells","sheet":"Sheet1","at":"A1","values":[{rows}]}}]"#);
+    for (kind, name, ops) in [(Kind::Document, "large.docx", ops), (Kind::Workbook, "large.xlsx", sheet_ops)] {
+        let mut s = open_made(kind, name, &ops, true);
+        s.wheel((600.0, 400.0), -3000.0);
+        let pages = s.with(|e, _| e.presentation().slides.len());
+        const READS: u32 = 200;
+        let started = std::time::Instant::now();
+        for _ in 0..READS {
+            std::hint::black_box(s.with(|e, _| e.agent_place()));
+        }
+        let each = started.elapsed() / READS;
+        let _ = s.update(|e, _, _| e.agent_place_changed());
+        let started = std::time::Instant::now();
+        for _ in 0..READS {
+            assert_eq!(s.with_app(|cx| crate::shell::agent::with_page_editor(cx, |e, _, _| Ok(e.agent_place_changed()))), Ok(None));
+        }
+        let idle = started.elapsed() / READS;
+        eprintln!("{name}: {pages} pages; a place read {each:?}; a frame's read while nothing is drawn {idle:?}");
+        assert!(idle < std::time::Duration::from_micros(50),"a frame's read while nothing is drawn takes {idle:?}");
+        // A draw lets the next read look again.
+        s.wheel((600.0, 400.0), 500.0);
+        assert!(s.update(|e, _, _| e.agent_place_changed()).is_some(), "the scroll is told");
+    }
 }
 
 /// A file of `kind` made by the agent's operations `ops`, open in a window as 開く opens it, read-only when `view`.

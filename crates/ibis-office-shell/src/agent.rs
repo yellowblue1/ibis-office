@@ -84,6 +84,9 @@ impl SlideEditor {
     /// the other editor of two side by side. A place this editor was asked to show is not told back, so two editors that
     /// follow each other do not answer each other's moves.
     pub fn agent_place_changed(&mut self) -> Option<String> {
+        if !std::mem::take(&mut self.agent_place_drawn) {
+            return None;
+        }
         let place = serde_json::to_string(&self.agent_place()?).expect("serialisable");
         if self.agent_told_place.as_deref() == Some(place.as_str()) {
             return None;

@@ -537,6 +537,9 @@ pub struct SlideEditor {
     pub(crate) last_synced_scroll: std::cell::Cell<Point<Pixels>>,
     /// The place last told to the embedding page, or put by its `show` (`agent::Place`, in JSON): only a change is told.
     pub(crate) agent_told_place: Option<String>,
+    /// The editor was drawn since the place was last read: only then can the place have changed (a scroll, a selection, the
+    /// pages laid out again all draw it), so the page's reading every frame costs nothing while nothing is drawn.
+    pub(crate) agent_place_drawn: bool,
     /// Whether this document was opened from an AutoRecover snapshot (XLSX-FILE-015).
     pub is_recovered: bool,
     /// Path of the autorecover backup file associated with this open document (if any).
@@ -840,6 +843,7 @@ impl SlideEditor {
             is_syncing_scroll: std::cell::Cell::new(false),
             last_synced_scroll: std::cell::Cell::new(Point::default()),
             agent_told_place: None,
+            agent_place_drawn: true,
             is_recovered: false,
             autorecover_settings: None,
             recover_unsaved: None,
@@ -3369,6 +3373,7 @@ impl Focusable for SlideEditor {
 
 impl Render for SlideEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.agent_place_drawn = true;
         crate::cmyk::set_display_gamut(self.has_document && self.cmyk_on());
         self.sync_zoom_slider(window, cx);
         if self.zoom_menu_open && !self.has_document {
