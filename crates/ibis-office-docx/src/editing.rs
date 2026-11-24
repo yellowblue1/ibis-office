@@ -1185,20 +1185,19 @@ impl SlideEditor {
             }
         }
         let started = crate::debug_timing::start();
-        let before = self.flow().map(|d| marked(d));
-        let redefine = self.auto_redefine_targets(&commands);
+        let before = self.flow().map(|d| ibis_doc_model::flow_follow_up::before(d, &commands));
         let result = self.document.execute(commands.into_iter().map(Command::Flow).collect());
         crate::debug_timing::report("edit", started);
         if let Err(err) = &result {
             log::warn!("edit rejected: {err}");
         }
         if result.is_ok()
-            && let Some(before) = before
+            && let (Some(before), Some(doc)) = (before, self.flow())
         {
-            self.remove_orphans(&before);
-        }
-        if result.is_ok() && !redefine.is_empty() {
-            self.auto_redefine_styles(&redefine);
+            let follow = ibis_doc_model::flow_follow_up::follow_up(&before, doc);
+            if !follow.is_empty() {
+                let _ = self.document.amend_last(follow.into_iter().map(Command::Flow).collect());
+            }
         }
         if result.is_ok() {
             self.sync_peers(cx);
@@ -1207,69 +1206,6 @@ impl SlideEditor {
         result.is_ok()
     }
 
-    /// スタイルの自動更新 (`w:autoRedefine`): the paragraphs whose formatting `commands` change by
-    /// hand (a paragraph's formatting, or a character formatting over the paragraph's whole text).
-    fn auto_redefine_targets(&self, commands: &[FlowCommand]) -> Vec<u32> {
-        let Some(doc) = self.flow() else { return Vec::new() };
-        if !doc.styles.styles.values().any(|s| s.auto_update) {
-            return Vec::new();
-        }
-        let mut out = Vec::new();
-        for command in commands {
-            match command {
-                FlowCommand::SetRunFormat { from, to, .. } if from.para == to.para && from.offset == 0 && flow_command::paragraph(doc, from.para).is_some_and(|p| p.len() == to.offset && to.offset > 0) => out.push(from.para),
-                FlowCommand::SetParagraphFormat { first, last, change } if !matches!(change, ParaChange::Style(_) | ParaChange::List(_) | ParaChange::Level(_) | ParaChange::AddBookmark(_) | ParaChange::RemoveBookmark(_) | ParaChange::SectionBreak(_)) => {
-                    let order = order(doc);
-                    if let (Some(a), Some(b)) = (order.iter().position(|p| p == first), order.iter().position(|p| p == last)) {
-                        out.extend(order[a.min(b)..=a.max(b)].iter().copied());
-                    }
-                }
-                _ => {}
-            }
-        }
-        out.sort_unstable();
-        out.dedup();
-        out.retain(|&id| flow_command::paragraph(doc, id).and_then(|p| p.style.clone().or_else(|| doc.styles.default_paragraph.clone())).and_then(|s| doc.styles.styles.get(&s)).is_some_and(|s| s.auto_update));
-        out
-    }
-
-    /// The styles of `paragraphs` take what was changed by hand (in the step of the edit).
-    fn auto_redefine_styles(&mut self, paragraphs: &[u32]) {
-        for &id in paragraphs {
-            let Some(doc) = self.flow() else { return };
-            let Some((style_id, style, paragraph)) = flow_command::style_matching(doc, id, 0) else { continue };
-            let Some((container, index)) = flow_command::locate(doc, id) else { continue };
-            let commands = vec![Command::Flow(FlowCommand::SetStyle { id: style_id, style: Some(style) }), Command::Flow(FlowCommand::ReplaceBlocks { container, index, remove: 1, blocks: vec![Block::Paragraph(paragraph)] })];
-            if self.document.amend_last(commands).is_err() {
-                return;
-            }
-        }
-    }
-
-    /// Notes and comments whose marks the edit removed go with them (as
-    /// Word does), in the same step of undo. Only those marked before the
-    /// edit: what a file has unmarked stays.
-    fn remove_orphans(&mut self, before: &Marked) {
-        for _ in 0..8 {
-            let Some(doc) = self.flow() else { return };
-            let now = marked(doc);
-            let lost: Vec<u32> = before.comments.difference(&now.comments).copied().collect();
-            let Some(&id) = lost.iter().find(|i| doc.comments.iter().any(|c| c.id == **i)) else { break };
-            let Some(command) = flow_command::delete_comment(doc, id) else { break };
-            if self.document.amend_last(vec![Command::Flow(command)]).is_err() {
-                break;
-            }
-        }
-        let Some(doc) = self.flow() else { return };
-        let now = marked(doc);
-        let lost: std::collections::HashSet<(bool, u32)> = before.notes.difference(&now.notes).copied().collect();
-        if lost.is_empty() {
-            return;
-        }
-        let footnotes: Vec<_> = doc.footnotes.iter().filter(|n| !lost.contains(&(false, n.id))).cloned().collect();
-        let endnotes: Vec<_> = doc.endnotes.iter().filter(|n| !lost.contains(&(true, n.id))).cloned().collect();
-        let _ = self.document.amend_last(vec![Command::Flow(FlowCommand::SetNotes { footnotes, endnotes })]);
-    }
 
     /// 挿入 > 脚注 (文末脚注): a note at the caret, the caret into its text.
     pub(crate) fn insert_note(&mut self, endnote: bool, cx: &mut Context<Self>) {
@@ -6131,44 +6067,6 @@ pub(crate) enum PageNumberPosition {
     FooterLeft,
     FooterCenter,
     FooterRight,
-}
-
-/// The notes and comments marked in the body (a comment: its start, end
-/// and mark all there).
-pub(crate) struct Marked {
-    notes: std::collections::HashSet<(bool, u32)>,
-    comments: std::collections::HashSet<u32>,
-}
-
-fn marked(doc: &FlowDocument) -> Marked {
-    let mut out = Marked { notes: Default::default(), comments: Default::default() };
-    if doc.footnotes.is_empty() && doc.endnotes.is_empty() && doc.comments.is_empty() {
-        return out;
-    }
-    fn walk(blocks: &[Block], notes: &mut std::collections::HashSet<(bool, u32)>, marks: &mut std::collections::HashMap<u32, [bool; 3]>) {
-        for b in blocks {
-            match b {
-                Block::Paragraph(p) => {
-                    for r in &p.runs {
-                        match r.kind {
-                            ibis_doc_model::FlowRunKind::NoteRef { endnote, id } => {
-                                notes.insert((endnote, id));
-                            }
-                            ibis_doc_model::FlowRunKind::CommentStart(i) => marks.entry(i).or_default()[0] = true,
-                            ibis_doc_model::FlowRunKind::CommentEnd(i) => marks.entry(i).or_default()[1] = true,
-                            ibis_doc_model::FlowRunKind::CommentRef(i) => marks.entry(i).or_default()[2] = true,
-                            _ => {}
-                        }
-                    }
-                }
-                Block::Table(t) => t.rows.iter().flat_map(|r| &r.cells).for_each(|c| walk(&c.blocks, notes, marks)),
-            }
-        }
-    }
-    let mut marks = std::collections::HashMap::new();
-    walk(&doc.body, &mut out.notes, &mut marks);
-    out.comments = marks.into_iter().filter(|(_, m)| *m == [true; 3]).map(|(i, _)| i).collect();
-    out
 }
 
 /// Tables of contents, links to bookmarks, and the outline.

@@ -21,7 +21,8 @@ The editor answers only its parent window, at the origin given explicitly with `
 | `{ source: 'ibisoffice-agent', id, method: 'state' }` | `result`: `{ dirty, revision }` as JSON text; `revision` changes with every edit, undo and redo (cheap: for saving once the person stops) |
 | `{ source: 'ibisoffice-agent', id, method: 'save' }` | `result`: the file's bytes (an `ArrayBuffer`, transferred); the document is then saved (not dirty). What the person is typing is saved as typed and their typing goes on |
 
-A refused request is answered `{ ok: false, error }`, and nothing changed. Once the document is open the editor posts
+A refused request is answered `{ ok: false, error }`, and nothing changed. An `apply` of an empty list is done, changing
+nothing. Once the document is open the editor posts
 `{ source: 'ibisoffice-agent', type: 'ready' }`.
 
 `?open=message` takes the document from the parent instead of a URL: the editor posts `{ source: 'ibisoffice-agent', type:
@@ -74,20 +75,26 @@ name of one an earlier operation of the list made; a shape also as `{ "placehold
 document's others), and the body's `blocks` in order: a paragraph `{ id, type: "paragraph", text, style?, list?, level? }`
 (`style` when it is not `Normal`; `list` `bullet` or `numbered` and its `level`, 0 to 8, for a list item), a table `{ id,
 type: "table", cells }` (each cell's paragraphs, by row). `header` and `footer` are the last section's header's and
-footer's paragraphs, read only. `dirty` says whether there are changes not saved.
+footer's paragraphs, read only. `dirty` says whether there are changes not saved. `revisions: true` says the document has
+tracked changes (変更履歴) not yet accepted or rejected: its text reads as accepting them would leave it (deleted text left
+out), and it is not edited until the person accepts or rejects them.
 
 A paragraph's `text` is one string. A line break within it (Shift+Enter) reads as `\n`, and is not written: text given holds
 no line break (one is refused); where there are several paragraphs they are given as a list of strings, as a presentation's
-text is. A tab is `\t`; a picture or a field is one character (U+FFFC).
+text is. A tab is `\t`; a picture, a field or a comment's mark is one character (U+FFFC). A control character other than a
+tab (a file cannot hold one) is refused.
 
-The ids stay while the document is open. A file read again is numbered again (the same bytes give the same ids).
+The ids stay while the document is open, and one is not given again, even after its block is deleted. A file read again is
+numbered again (the same bytes give the same ids).
 
 ### Operations
 
 Operations are applied as a presentation's are: a list whole or not at all, a refusal with the operation's `index` and why.
 Sizes are in points, colours `#RRGGBB`. A paragraph or a table of the body is named by its id, or by the `as` name of one an
-earlier operation of the list made. A document that records changes (変更履歴の記録), is protected against editing or is
-marked as final is not edited.
+earlier operation of the list made. A document that records changes (変更履歴の記録), has tracked changes, is protected
+against editing or is marked as final is not edited; one whose formatting is protected (書式の制限) is not formatted. An edit
+does what the Word editor's does besides: a comment or a note whose marked text it deletes goes with it, and a style that
+updates itself (スタイルを自動的に更新する) takes the format given to its paragraph.
 
 | `op` | Fields |
 | --- | --- |
@@ -160,3 +167,4 @@ ibis-agent apply deck.pptx ops.json -o out.pptx   # `-` reads the operations fro
 ```
 
 `apply` prints `{ "replaced": n, "document": … }` of the file written, or `{ "error": … }` and exits with 1, writing nothing.
+The file is put in place only once what was written opens again; until then the one at `-o` is left as it was.

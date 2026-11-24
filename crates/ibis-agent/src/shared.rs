@@ -19,7 +19,19 @@ impl TryFrom<Vec<String>> for Text {
         if let Some(i) = paragraphs.iter().position(|p| has_line_break(p)) {
             return Err(format!("paragraph {i} has a line break: give each paragraph as its own string"));
         }
+        for (i, p) in paragraphs.iter().enumerate() {
+            holdable(p).map_err(|e| format!("paragraph {i}: {e}"))?;
+        }
         Ok(Text(paragraphs.join("\n")))
+    }
+}
+
+/// Refuse a control character other than a tab (and the line breaks, refused on their own): a file holds none, so it
+/// would be left out of what is saved, and the file would not have what the agent reads.
+pub(crate) fn holdable(text: &str) -> Result<(), String> {
+    match text.chars().find(|&c| c < ' ' && !matches!(c, '\t' | '\n' | '\r' | '\u{b}') || matches!(c, '\u{fffe}' | '\u{ffff}')) {
+        Some(c) => Err(format!("the text has the character U+{:04X}, which a file cannot hold", c as u32)),
+        None => Ok(()),
     }
 }
 

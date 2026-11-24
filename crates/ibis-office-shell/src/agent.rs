@@ -40,10 +40,14 @@ impl SlideEditor {
         let current = self.presentation().clone();
         let ids = self.document.ids();
         let planned = ibis_agent::plan(&ops, &current, &source, &mut || ids.new_shape_id().0).map_err(|e| e.to_string())?;
-        let steps = self.document.undo_len();
-        self.execute(planned.commands, cx);
-        if self.document.undo_len() == steps {
-            return Err("the editor refused the change (the document is marked as final, or read-only)".into());
+        // A list that makes no command (an empty one) is done, changing nothing; only a change the editor drops is refused.
+        if !planned.commands.is_empty() {
+            let steps = self.document.undo_len();
+            self.execute(planned.commands, cx);
+            if self.document.undo_len() == steps {
+                return Err("the editor refused the change (the document is marked as final, or read-only)".into());
+            }
+            with_format!(self, edited_from_outside(self));
         }
         if let Some(slide) = planned.shown
             && slide != self.current_slide
@@ -83,7 +87,8 @@ impl SlideEditor {
     fn agent_source(&self) -> Result<Arc<ibis_pptx::Source>, String> {
         match &self.source {
             Some(source) if self.has_document => Ok(source.clone()),
-            _ => Err("no document is open".into()),
+            None if self.has_document => Err("the file open is a new one, not opened from a file: the agent edits a file that was opened".into()),
+            _ => Err("no file is open".into()),
         }
     }
 }

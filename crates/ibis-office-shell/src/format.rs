@@ -692,6 +692,10 @@ pub trait FormatEditor {
     /// Undo or redo has changed the document: after the window brought its own parts up to date.
     fn history_applied(_editor: &mut SlideEditor, _cx: &mut Context<SlideEditor>) {}
 
+    /// Commands the window did not make have changed the document (an AI agent's edit): what the window holds of places
+    /// in it that the change may have moved is let go (a document's extra selections).
+    fn edited_from_outside(_editor: &mut SlideEditor) {}
+
     /// A modifier key went down or up, when a drag of the format's follows it (a workbook's cell move and fill copy while ⌥ is held).
     fn modifiers_changed(_editor: &mut SlideEditor, _event: &ModifiersChangedEvent, _cx: &mut Context<SlideEditor>) {}
 
@@ -1356,6 +1360,7 @@ pub trait FormatDriver: Sync {
     fn page_when_current_gone(&self, _editor: &SlideEditor) -> Option<SlideId>;
     fn history_applied_early(&self, _editor: &mut SlideEditor, _window: &mut Window, _cx: &mut Context<SlideEditor>);
     fn history_applied(&self, _editor: &mut SlideEditor, _cx: &mut Context<SlideEditor>);
+    fn edited_from_outside(&self, _editor: &mut SlideEditor);
     fn modifiers_changed(&self, _editor: &mut SlideEditor, _event: &ModifiersChangedEvent, _cx: &mut Context<SlideEditor>);
     fn workspace_wheel(&self, _editor: &mut SlideEditor, _event: &ScrollWheelEvent, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> bool;
     fn shape_press_early(&self, _editor: &mut SlideEditor, _event: &MouseDownEvent, _cx: &mut Context<SlideEditor>) -> bool;
@@ -1768,6 +1773,9 @@ impl<F: FormatEditor> FormatDriver for Driver<F> {
     }
     fn history_applied(&self, _editor: &mut SlideEditor, _cx: &mut Context<SlideEditor>) {
         F::history_applied(_editor, _cx)
+    }
+    fn edited_from_outside(&self, _editor: &mut SlideEditor) {
+        F::edited_from_outside(_editor)
     }
     fn modifiers_changed(&self, _editor: &mut SlideEditor, _event: &ModifiersChangedEvent, _cx: &mut Context<SlideEditor>) {
         F::modifiers_changed(_editor, _event, _cx)

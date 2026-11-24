@@ -640,6 +640,12 @@ impl Document {
 
 // ----- Escaping --------------------------------------------------------------
 
+/// A character XML 1.0 cannot hold, even as a reference (§2.2 `Char`): written, it makes the part unreadable to every
+/// reader, so it is left out (a workbook's text writes its own as `_xHHHH_` before it gets here).
+fn not_xml(c: char) -> bool {
+    matches!(c, '\0'..='\u{8}' | '\u{b}' | '\u{c}' | '\u{e}'..='\u{1f}' | '\u{fffe}' | '\u{ffff}')
+}
+
 fn escape_text(value: &str, out: &mut String) {
     for c in value.chars() {
         match c {
@@ -648,6 +654,7 @@ fn escape_text(value: &str, out: &mut String) {
             '>' => out.push_str("&gt;"),
             // A carriage return would be read back as a line feed.
             '\r' => out.push_str("&#13;"),
+            c if not_xml(c) => {}
             c => out.push(c),
         }
     }
@@ -656,6 +663,7 @@ fn escape_text(value: &str, out: &mut String) {
 fn escape_attribute(value: &str, out: &mut String) {
     for c in value.chars() {
         match c {
+            c if not_xml(c) => {}
             '&' => out.push_str("&amp;"),
             '<' => out.push_str("&lt;"),
             '"' => out.push_str("&quot;"),
@@ -953,6 +961,18 @@ mod tests {
         doc.set_attr(empty, "b", "\"q\"");
         let out = String::from_utf8(doc.to_bytes()).unwrap();
         assert!(out.contains("<a:empty b=\"&quot;q&quot;\">now</a:empty>"), "{out}");
+    }
+
+    /// A control character in a text or an attribute is left out: the part written is still XML.
+    #[test]
+    fn characters_xml_cannot_hold_are_left_out() {
+        let mut doc = Document::parse(SAMPLE.as_bytes()).unwrap();
+        let t = doc.descendants(Document::ROOT).into_iter().find(|&n| doc.name(n) == "a:t").unwrap();
+        doc.set_text(t, "a\u{1}b\u{7}c\td\u{fffe}");
+        doc.set_attr(t, "alt", "x\u{0}y");
+        let again = Document::parse(&doc.to_bytes()).unwrap();
+        let t = again.descendants(Document::ROOT).into_iter().find(|&n| again.name(n) == "a:t").unwrap();
+        assert_eq!((again.text(t).as_str(), again.attr(t, "alt")), ("abc\td", Some("xy")));
     }
 
     #[test]

@@ -28,6 +28,7 @@ pub mod drawing;
 pub mod error_check;
 pub mod flow;
 pub mod flow_command;
+pub mod flow_follow_up;
 pub mod data_table;
 pub mod geometry;
 pub mod math;

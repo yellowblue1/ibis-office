@@ -364,6 +364,137 @@ fn a_document_that_records_changes_is_refused() {
     assert!(err.message.contains("records changes"), "{err}");
 }
 
+/// A document whose first paragraph reads "keep gone" with "gone" a tracked deletion not yet accepted.
+fn with_a_deletion() -> Session {
+    let mut session = blank();
+    let first = first_id(&session);
+    apply(&mut session, &format!(r#"{{"op": "set_text", "paragraph": {first}, "text": "keep gone"}}"#)).unwrap();
+    let mut model = session.model().clone();
+    let mut doc = (*model.flow.take().unwrap()).clone();
+    let Some(ibis_doc_model::flow::Block::Paragraph(p)) = doc.body.first_mut() else { unreachable!() };
+    let mut gone = p.runs[0].clone();
+    p.runs[0].kind = ibis_doc_model::flow::FlowRunKind::Text("keep ".into());
+    gone.kind = ibis_doc_model::flow::FlowRunKind::Text("gone".into());
+    gone.revision = Some(ibis_doc_model::flow::Revision { kind: ibis_doc_model::flow::RevisionKind::Delete, author: "someone".into(), date: String::new() });
+    p.runs.push(gone);
+    model.flow = Some(std::sync::Arc::new(doc));
+    session.document = ibis_doc_model::Document::new(model);
+    session
+}
+
+/// A tracked change is the person's to accept or reject: the summary reads the document as accepting them would leave
+/// it, says it has them, and no edit is made until they are gone.
+#[test]
+fn a_document_with_tracked_changes_reads_as_accepted_and_is_not_edited() {
+    let session = with_a_deletion();
+    let doc = read(&session);
+    assert_eq!(doc.blocks[0].text.as_deref(), Some("keep "));
+    assert!(doc.revisions);
+    let json = serde_json::to_string(&session.inspect()).unwrap();
+    assert!(json.contains(r#""revisions":true"#), "{json}");
+    assert!(!serde_json::to_string(&blank().inspect()).unwrap().contains("revisions"));
+
+    let mut session = session;
+    let err = apply(&mut session, r#"{"op": "insert_paragraphs", "text": ["x"]}"#).unwrap_err();
+    assert!(err.message.contains("tracked changes"), "{err}");
+    assert_eq!(session.document.undo_len(), 0);
+}
+
+/// A character a file cannot hold is refused in what the agent writes; one already in the model is left out of the file
+/// written, which then opens again.
+#[test]
+fn characters_a_file_cannot_hold() {
+    let mut session = blank();
+    let first = first_id(&session);
+    for json in [
+        format!(r#"{{"op": "set_text", "paragraph": {first}, "text": "a\u0001b"}}"#),
+        r#"{"op": "insert_paragraphs", "text": ["a\u0007"]}"#.to_string(),
+        r#"{"op": "replace_text", "find": "a", "replace": "\u0000"}"#.to_string(),
+    ] {
+        let err = parse_ops(&json).map(|ops| session.apply(&ops)).map_or_else(|e| e, |r| r.unwrap_err().message);
+        assert!(err.contains("which a file cannot hold"), "{json}: {err}");
+    }
+    apply(&mut session, &format!(r#"{{"op": "set_text", "paragraph": {first}, "text": "a\tb"}}"#)).unwrap();
+
+    let at = ibis_doc_model::FlowPos::new(first, 1);
+    session.document.execute(vec![ibis_doc_model::Command::Flow(ibis_doc_model::FlowCommand::InsertText { at, text: "\u{1}".into(), format: None })]).unwrap();
+    assert_eq!(texts(&reopened(&session)), ["a\tb"]);
+}
+
+/// Deleting the text a comment marks deletes the comment, in the same undo, as the Word editor does.
+#[test]
+fn a_comment_goes_with_the_text_it_marks() {
+    let mut session = blank();
+    let first = first_id(&session);
+    let applied = apply(&mut session, &format!(r#"[{{"op": "set_text", "paragraph": {first}, "text": "rest"}}, {{"op": "insert_paragraphs", "text": ["noted"]}}]"#)).unwrap();
+    let noted = applied.created[1]["paragraphs"][0].as_u64().unwrap() as u32;
+    let who = ibis_doc_model::flow_command::CommentAuthor { author: "someone".into(), initials: "S".into(), date: "2026-11-24T00:00:00Z".into() };
+    let add = ibis_doc_model::flow_command::add_comment(flow(&session), ibis_doc_model::FlowPos::new(noted, 0), ibis_doc_model::FlowPos::new(noted, 5), &who, "check").unwrap();
+    session.document.execute(add.into_iter().map(ibis_doc_model::Command::Flow).collect()).unwrap();
+    assert_eq!(flow(&session).comments.len(), 1);
+    let steps = session.document.undo_len();
+    let marked = texts(&session);
+
+    apply(&mut session, &format!(r#"{{"op": "delete", "blocks": [{noted}]}}"#)).unwrap();
+    assert!(flow(&session).comments.is_empty());
+    assert!(reopened(&session).model().flow.as_deref().unwrap().comments.is_empty());
+    assert_eq!(session.document.undo_len(), steps + 1);
+    session.document.undo();
+    assert_eq!(flow(&session).comments.len(), 1);
+    assert_eq!(texts(&session), marked);
+}
+
+/// An id the summary showed names that block only: one deleted is not given to a block made after, while the file is
+/// open.
+#[test]
+fn ids_are_not_given_again() {
+    let mut session = blank();
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..3 {
+        let applied = apply(&mut session, r#"[{"op": "insert_paragraphs", "text": ["a", "b"]}, {"op": "add_table", "rows": [[["x"], ["y"]]]}]"#).unwrap();
+        let table = applied.created[1]["table"].as_u64().unwrap() as u32;
+        apply(&mut session, &format!(r#"{{"op": "insert_table_row", "table": {table}}}"#)).unwrap();
+        apply(&mut session, &format!(r#"{{"op": "set_cell", "table": {table}, "row": 1, "column": 0, "text": ["p", "q"]}}"#)).unwrap();
+        let doc = flow(&session);
+        let mut ids = Vec::new();
+        collect(&doc.body, &mut ids);
+        let made: Vec<u32> = ids.into_iter().filter(|&id| id != first_id(&blank())).collect();
+        for id in &made {
+            assert!(seen.insert(*id), "id {id} given again");
+        }
+        let blocks: Vec<String> = read(&session).blocks.iter().skip(1).map(|b| b.id.to_string()).collect();
+        apply(&mut session, &format!(r#"{{"op": "delete", "blocks": [{}]}}"#, blocks.join(", "))).unwrap();
+    }
+
+    fn collect(blocks: &[ibis_doc_model::flow::Block], ids: &mut Vec<u32>) {
+        for b in blocks {
+            match b {
+                ibis_doc_model::flow::Block::Paragraph(p) => ids.push(p.id),
+                ibis_doc_model::flow::Block::Table(t) => {
+                    ids.push(t.id);
+                    for row in &t.rows {
+                        ids.push(row.id);
+                        for cell in &row.cells {
+                            ids.push(cell.id);
+                            collect(&cell.blocks, ids);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A list of no operations is done and changes nothing.
+#[test]
+fn an_empty_list_changes_nothing() {
+    let mut session = blank();
+    let applied = apply(&mut session, "[]").unwrap();
+    assert!(applied.created.is_empty());
+    assert_eq!(session.document.undo_len(), 0);
+    assert!(!session.document.is_dirty());
+}
+
 #[test]
 fn bad_values_are_refused_with_what_is_wrong() {
     let mut session = blank();

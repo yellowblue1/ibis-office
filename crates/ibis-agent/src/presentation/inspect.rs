@@ -2,7 +2,7 @@
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! The presentation as the agent reads it: its slides in order, each shape with its id, place (in points), text and,
-//! for a table, its cells. The ids are the editor's: they stay while the document is open, and are what [`crate::Op`]s
+//! for a table, its cells. The ids are the editor's: they stay while the document is open, and are what [`Op`](crate::presentation::Op)s
 //! name.
 
 use ibis_doc_model::drawing::Fill;
@@ -64,7 +64,7 @@ pub struct ShapeInfo {
     pub h: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fill: Option<String>,
-    /// Its paragraphs, in the shape [`crate::Op`]s take text in.
+    /// Its paragraphs, in the shape [`Op`](crate::presentation::Op)s take text in.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<Vec<String>>,
     /// The size of the text's first character, in points.

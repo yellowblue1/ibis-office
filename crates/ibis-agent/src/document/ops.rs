@@ -7,16 +7,16 @@
 //! Sizes are in points, colours `#RRGGBB`, and the body's paragraphs and tables are named by the ids [`crate::inspect`]
 //! gives, or, for one made earlier in the same list, by the name its `as` gave it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use ibis_doc_model::command::Command;
 use ibis_doc_model::flow::{Block, FlowAlign, FlowDocument, FlowParagraph, FlowRunKind, FlowStyles, StyleKind, StyleSetPreset};
-use ibis_doc_model::flow_command::{self, Container, FlowCommand, FlowPos, InsertFormat, ParaChange, RunChange, TableEdit};
+use ibis_doc_model::flow_command::{self, Container, apply_to, FlowCommand, FlowPos, InsertFormat, ParaChange, RunChange, TableEdit};
 use ibis_doc_model::{Document, EMU_PER_POINT, Presentation};
 use ibis_pptx::Source;
 use serde::{Deserialize, Serialize};
 
-use crate::shared::{Align, List, ParagraphFormat, Text, TextFormat, font_size, has_line_break, occurrences, rgb};
+use crate::shared::{Align, List, ParagraphFormat, Text, TextFormat, font_size, has_line_break, holdable, occurrences, rgb};
 use crate::{OpError, Planned};
 
 /// A paragraph or a table of the body: its id, or the `as` name of one made earlier in the same list.
@@ -39,6 +39,7 @@ impl TryFrom<String> for Line {
         if has_line_break(&text) {
             return Err("the text has a line break: a paragraph holds none (more paragraphs are made with insert_paragraphs)".into());
         }
+        holdable(&text)?;
         Ok(Line(text))
     }
 }
@@ -107,15 +108,24 @@ pub struct Created {
     pub replaced: Option<usize>,
 }
 
-/// Turn `ops` into commands on `current`, opened from `source`. Each operation sees what the ones before it did; the
-/// result is saved (and the bytes thrown away) to make sure the file can be written with it. What the operations make
-/// is numbered as the document numbers its blocks (`FlowDocument::new_id`), which a save finds them by.
-pub fn plan(ops: &[Op], current: &Presentation, source: &Source, _new_id: &mut dyn FnMut() -> u64) -> Result<Planned, OpError> {
+/// Turn `ops` into commands on `current`, opened from `source`. Each operation sees what the ones before it did, and
+/// what the Word editor adds to an edit of its own (`flow_follow_up`) follows each; the result is saved (and the bytes
+/// thrown away) to make sure the file can be written with it.
+///
+/// The paragraphs and tables made take their ids from `new_id` (the editor's document's counter, `Document::ids`),
+/// past any the document has had: an id the agent read is never another block's while the file is open, though the
+/// block it named was deleted (the document's own numbering, the largest id and one, would give it again).
+pub fn plan(ops: &[Op], current: &Presentation, source: &Source, new_id: &mut dyn FnMut() -> u64) -> Result<Planned, OpError> {
     let doc = current.flow.as_deref().ok_or_else(|| OpError { index: None, message: "the file has no document".into() })?;
     editable(doc).map_err(|message| OpError { index: None, message })?;
-    let mut planner = Planner { scratch: Document::new(current.clone()), names: HashMap::new(), commands: Vec::new() };
+    let mut planner = Planner { scratch: Document::new(current.clone()), names: HashMap::new(), commands: Vec::new(), new_id, high: 0 };
+    // Past what the document has now, so that an id deleted by this list or a later one is not given again.
+    planner.fresh().map_err(|message| OpError { index: None, message })?;
     let mut created = Vec::new();
     for (index, op) in ops.iter().enumerate() {
+        if doc.formatting_protection && matches!(op, Op::FormatText { .. } | Op::FormatParagraphs { .. } | Op::SetStyle { .. }) {
+            return Err(OpError { index: Some(index), message: "the document's formatting is protected (書式の制限)".into() });
+        }
         let made = planner.op(op).map_err(|message| OpError { index: Some(index), message })?;
         created.push(made);
     }
@@ -137,7 +147,22 @@ fn editable(doc: &FlowDocument) -> Result<(), String> {
     if doc.track_changes {
         return Err("the document records changes (変更履歴の記録), and the agent's edits are not recorded as changes: turn recording off first".into());
     }
+    // Text deleted and not yet accepted is still in the paragraphs: an edit would count and find it as the text there.
+    if has_revisions(doc) {
+        return Err("the document has tracked changes not yet accepted or rejected (変更履歴): accept or reject them first".into());
+    }
     Ok(())
+}
+
+/// Whether the document's body has a tracked change in it.
+pub(super) fn has_revisions(doc: &FlowDocument) -> bool {
+    fn any(blocks: &[Block]) -> bool {
+        blocks.iter().any(|b| match b {
+            Block::Paragraph(p) => p.mark_revision.is_some() || p.runs.iter().any(|r| r.revision.is_some()),
+            Block::Table(t) => t.rows.iter().flat_map(|r| &r.cells).any(|c| any(&c.blocks)),
+        })
+    }
+    any(&doc.body)
 }
 
 /// A paragraph style the summary offers: the document's, and Word's usual ones it does not have yet, defined when given.
@@ -168,47 +193,67 @@ pub(super) fn shown(name: &str) -> String {
     chars.next().map_or_else(String::new, |first| first.to_uppercase().chain(chars).collect())
 }
 
-struct Planner {
+struct Planner<'a> {
     /// The document as the operations so far left it.
     scratch: Document,
     names: HashMap<String, u32>,
     commands: Vec<Command>,
+    new_id: &'a mut dyn FnMut() -> u64,
+    /// The last id `fresh` gave.
+    high: u32,
 }
 
-impl Planner {
+impl Planner<'_> {
     fn doc(&self) -> &FlowDocument {
         self.scratch.presentation().flow.as_deref().expect("a document")
     }
 
-    /// Apply `commands` to the scratch document (for what follows to see) and keep them for the editor.
+    /// Apply `commands` to the scratch document (for what follows to see) and keep them for the editor, with what the
+    /// Word editor adds to its own edits.
     fn run(&mut self, commands: Vec<FlowCommand>) -> Result<(), String> {
+        let before = ibis_doc_model::flow_follow_up::before(self.doc(), &commands);
+        self.execute(commands)?;
+        let follow = ibis_doc_model::flow_follow_up::follow_up(&before, self.doc());
+        self.execute(follow)
+    }
+
+    fn execute(&mut self, commands: Vec<FlowCommand>) -> Result<(), String> {
         let commands: Vec<Command> = commands.into_iter().map(Command::Flow).collect();
         self.scratch.execute(commands.clone()).map_err(|e| e.to_string())?;
         self.commands.extend(commands);
         Ok(())
     }
 
+    /// An id for a paragraph or a table made: from the editor's counter, past every id the document has (and had when
+    /// it was read: `id_floor`) and those given before.
+    fn fresh(&mut self) -> Result<u32, String> {
+        let past = (self.doc().new_id() - 1).max(self.high);
+        loop {
+            let id = u32::try_from((self.new_id)()).map_err(|_| "the document has run out of ids".to_string())?;
+            if id > past {
+                self.high = id;
+                return Ok(id);
+            }
+        }
+    }
+
     fn op(&mut self, op: &Op) -> Result<Created, String> {
         match op {
             Op::InsertParagraphs { after, before, text, style, name } => {
                 let index = self.place(after.as_ref(), before.as_ref())?;
-                let count = text.as_str().split('\n').count();
                 let style = match style {
                     Some(name) => self.style(name)?,
                     None => None,
                 };
-                let doc = self.doc();
-                let mut paragraph = FlowParagraph { id: doc.new_id(), style, ..FlowParagraph::default() };
-                paragraph.resolve(&doc.styles);
-                let id = paragraph.id;
-                let mut commands = vec![FlowCommand::ReplaceBlocks { container: Container::Body, index, remove: 0, blocks: vec![Block::Paragraph(paragraph)] }];
-                if !text.as_str().is_empty() {
-                    commands.push(FlowCommand::InsertText { at: FlowPos::new(id, 0), text: text.as_str().to_string(), format: None });
-                }
+                let mut template = FlowParagraph { style, ..FlowParagraph::default() };
+                template.resolve(&self.doc().styles);
+                let (blocks, fill) = self.paragraphs_of(&template, text, None, None)?;
+                let made: Vec<u32> = blocks.iter().map(block_id).collect();
+                let mut commands = vec![FlowCommand::ReplaceBlocks { container: Container::Body, index, remove: 0, blocks }];
+                commands.extend(fill);
                 self.run(commands)?;
-                let made: Vec<u32> = self.doc().body[index..index + count].iter().map(block_id).collect();
                 if let Some(name) = name {
-                    self.names.insert(name.clone(), id);
+                    self.names.insert(name.clone(), made[0]);
                 }
                 Ok(Created { paragraphs: made, ..Default::default() })
             }
@@ -257,6 +302,7 @@ impl Planner {
                 if has_line_break(find) || has_line_break(replace) {
                     return Err("find and replace are text within a paragraph: they hold no line break".into());
                 }
+                holdable(replace)?;
                 let ids = match paragraph {
                     Some(r) => {
                         let index = self.block(r)?;
@@ -375,41 +421,34 @@ impl Planner {
                 let index = self.place(after.as_ref(), before.as_ref())?;
                 let doc = self.doc();
                 let width = doc.page.size.width - doc.page.left - doc.page.right;
-                let id = doc.new_id();
-                // 挿入 > 表 puts the table before a paragraph (at its start); elsewhere it is made before the first
-                // paragraph and moved.
-                match doc.body.get(index) {
-                    Some(Block::Paragraph(p)) => {
-                        let at = FlowPos::new(p.id, 0);
-                        self.run(vec![FlowCommand::InsertTable { at, rows: rows.len(), columns, width }])?;
-                    }
-                    _ => {
-                        let (first, at) = doc.body.iter().enumerate().find_map(|(i, b)| if let Block::Paragraph(p) = b { Some((i, FlowPos::new(p.id, 0))) } else { None }).ok_or("the document has no paragraph")?;
-                        self.run(vec![FlowCommand::InsertTable { at, rows: rows.len(), columns, width }])?;
-                        let table = self.doc().body[first].clone();
-                        self.run(vec![
-                            FlowCommand::ReplaceBlocks { container: Container::Body, index: first, remove: 1, blocks: Vec::new() },
-                            FlowCommand::ReplaceBlocks { container: Container::Body, index, remove: 0, blocks: vec![table] },
-                        ])?;
-                    }
-                }
-                if self.doc().body.len() == index + 1 {
-                    let doc = self.doc();
-                    let mut end = FlowParagraph { id: doc.new_id(), ..FlowParagraph::default() };
-                    end.resolve(&doc.styles);
-                    self.run(vec![FlowCommand::ReplaceBlocks { container: Container::Body, index: index + 1, remove: 0, blocks: vec![Block::Paragraph(end)] }])?;
-                }
+                // The table 挿入 > 表 makes, made on a copy before a paragraph, then given ids of its own and put in place.
+                let (first, at) = doc.body.iter().enumerate().find_map(|(i, b)| if let Block::Paragraph(p) = b { Some((i, FlowPos::new(p.id, 0))) } else { None }).ok_or("the document has no paragraph")?;
+                let mut built = doc.clone();
+                apply_to(&mut built, FlowCommand::InsertTable { at, rows: rows.len(), columns, width }).map_err(|e| e.to_string())?;
+                let mut table = built.body[first].clone();
+                self.renumber(&mut table, &HashSet::new())?;
+                let Block::Table(t) = &mut table else { unreachable!("InsertTable puts a table before the paragraph") };
+                let id = t.id;
                 let mut fill = Vec::new();
                 for (r, line) in rows.iter().enumerate() {
                     for (c, text) in line.iter().enumerate() {
-                        if text.as_str().is_empty() {
-                            continue;
-                        }
-                        let first = self.cell(id, r, c)?.iter().find_map(|b| if let Block::Paragraph(p) = b { Some(p.id) } else { None }).expect("a new cell has its paragraph");
-                        fill.push(FlowCommand::InsertText { at: FlowPos::new(first, 0), text: text.as_str().to_string(), format: None });
+                        let cell = &mut t.rows[r].cells[c];
+                        let Some(Block::Paragraph(template)) = cell.blocks.first().cloned() else { unreachable!("a new cell has its paragraph") };
+                        let (blocks, commands) = self.paragraphs_of(&template, text, Some(template.id), None)?;
+                        t.rows[r].cells[c].blocks = blocks;
+                        fill.extend(commands);
                     }
                 }
-                self.run(fill)?;
+                let mut blocks = vec![table];
+                // Word keeps a paragraph after a table at the end of a document.
+                if index == self.doc().body.len() {
+                    let mut end = FlowParagraph { id: self.fresh()?, ..FlowParagraph::default() };
+                    end.resolve(&self.doc().styles);
+                    blocks.push(Block::Paragraph(end));
+                }
+                let mut commands = vec![FlowCommand::ReplaceBlocks { container: Container::Body, index, remove: 0, blocks }];
+                commands.extend(fill);
+                self.run(commands)?;
                 if let Some(name) = name {
                     self.names.insert(name.clone(), id);
                 }
@@ -418,16 +457,12 @@ impl Planner {
             Op::SetCell { table, row, column, text } => {
                 let table = self.table(table)?;
                 let blocks = self.cell(table, *row, *column)?;
-                let template = blocks.iter().find_map(|b| if let Block::Paragraph(p) = b { Some(p) } else { None }).ok_or("the cell has no paragraph")?;
-                let (format, char_style, _) = template.format_at(0);
-                let mut emptied = FlowParagraph { runs: Vec::new(), ..template.clone() };
-                emptied.resolve(&self.doc().styles);
-                let id = emptied.id;
+                let template = blocks.iter().find_map(|b| if let Block::Paragraph(p) = b { Some(p.clone()) } else { None }).ok_or("the cell has no paragraph")?;
                 let remove = blocks.len();
-                let mut commands = vec![FlowCommand::ReplaceBlocks { container: Container::Cell { table, row: *row, cell: *column }, index: 0, remove, blocks: vec![Block::Paragraph(emptied)] }];
-                if !text.as_str().is_empty() {
-                    commands.push(FlowCommand::InsertText { at: FlowPos::new(id, 0), text: text.as_str().to_string(), format: Some(InsertFormat { format, char_style }) });
-                }
+                let (format, char_style, _) = template.format_at(0);
+                let (blocks, fill) = self.paragraphs_of(&template, text, Some(template.id), Some(InsertFormat { format, char_style }))?;
+                let mut commands = vec![FlowCommand::ReplaceBlocks { container: Container::Cell { table, row: *row, cell: *column }, index: 0, remove, blocks }];
+                commands.extend(fill);
                 self.run(commands)?;
                 Ok(Created::default())
             }
@@ -440,7 +475,16 @@ impl Planner {
                     at if at <= rows => TableEdit::InsertRow { row: at - 1, below: true },
                     at => return Err(format!("row {at} is past the end ({rows} rows)")),
                 };
-                self.run(vec![FlowCommand::EditTable { table, edit }])?;
+                // The row 行の挿入 makes, made on a copy, then given ids of its own: the copy numbers it past the ids the
+                // document has now, which can be ids it had before.
+                let index = self.doc().body.iter().position(|b| block_id(b) == table).ok_or("the table is not in the document's body")?;
+                let mut kept = HashSet::new();
+                ids_in(&self.doc().body[index], &mut kept);
+                let mut built = self.doc().clone();
+                apply_to(&mut built, FlowCommand::EditTable { table, edit }).map_err(|e| e.to_string())?;
+                let mut edited = built.body[index].clone();
+                self.renumber(&mut edited, &kept)?;
+                self.run(vec![FlowCommand::ReplaceBlocks { container: Container::Body, index, remove: 1, blocks: vec![edited] }])?;
                 Ok(Created::default())
             }
             Op::DeleteTableRow { table, at } => {
@@ -456,6 +500,68 @@ impl Planner {
                 Ok(Created::default())
             }
         }
+    }
+
+    /// Empty paragraphs formatted as `template`, one for each of `text`'s, and the commands that then put their text in
+    /// them (formatted as `format`; as the paragraph when not given). The first is `first` when given (the paragraph a
+    /// cell keeps); the others are new, with ids of their own.
+    fn paragraphs_of(&mut self, template: &FlowParagraph, text: &Text, first: Option<u32>, format: Option<InsertFormat>) -> Result<(Vec<Block>, Vec<FlowCommand>), String> {
+        let mut blocks = Vec::new();
+        let mut fill = Vec::new();
+        for (i, line) in text.as_str().split('\n').enumerate() {
+            let p = match (i, first) {
+                (0, Some(id)) => FlowParagraph { id, runs: Vec::new(), ..template.clone() },
+                _ => FlowParagraph {
+                    id: self.fresh()?,
+                    runs: Vec::new(),
+                    section_break: ibis_doc_model::flow::SectionBreak::None,
+                    section: None,
+                    bookmarks: Vec::new(),
+                    bookmark_ends: Vec::new(),
+                    field_start: None,
+                    field_end: false,
+                    field_dirty: false,
+                    subdoc: None,
+                    mark_revision: None,
+                    ..template.clone()
+                },
+            };
+            if !line.is_empty() {
+                fill.push(FlowCommand::InsertText { at: FlowPos::new(p.id, 0), text: line.to_string(), format: format.clone() });
+            }
+            blocks.push(Block::Paragraph(p));
+        }
+        Ok((blocks, fill))
+    }
+
+    /// Give `block`, and the rows, cells and blocks in it, fresh ids, but for those of `keep`.
+    fn renumber(&mut self, block: &mut Block, keep: &HashSet<u32>) -> Result<(), String> {
+        match block {
+            Block::Paragraph(p) => {
+                if !keep.contains(&p.id) {
+                    p.id = self.fresh()?;
+                }
+            }
+            Block::Table(t) => {
+                if !keep.contains(&t.id) {
+                    t.id = self.fresh()?;
+                }
+                for row in &mut t.rows {
+                    if !keep.contains(&row.id) {
+                        row.id = self.fresh()?;
+                    }
+                    for cell in &mut row.cells {
+                        if !keep.contains(&cell.id) {
+                            cell.id = self.fresh()?;
+                        }
+                        for b in &mut cell.blocks {
+                            self.renumber(b, keep)?;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Where in the body a block goes: after `after`, before `before`, or at the end.
@@ -542,6 +648,20 @@ impl Planner {
         let style = defined.styles[&id].clone();
         self.run(vec![FlowCommand::SetStyle { id: id.clone(), style: Some(style) }])?;
         Ok(Some(id))
+    }
+}
+
+/// The ids of `block` and of the rows, cells and blocks in it.
+fn ids_in(block: &Block, ids: &mut HashSet<u32>) {
+    ids.insert(block_id(block));
+    if let Block::Table(t) = block {
+        for row in &t.rows {
+            ids.insert(row.id);
+            for cell in &row.cells {
+                ids.insert(cell.id);
+                cell.blocks.iter().for_each(|b| ids_in(b, ids));
+            }
+        }
     }
 }
 

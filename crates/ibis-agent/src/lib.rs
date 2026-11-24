@@ -132,12 +132,12 @@ pub fn plan(ops: &Ops, current: &Presentation, source: &Source, new_id: &mut dyn
     }
 }
 
-/// The model saved (and the bytes thrown away), to make sure the file can be written with it.
+/// The model saved and the bytes read again (then thrown away), to make sure the file can be written with it and opened
+/// after: a writer that wrote something unreadable refuses the edit rather than leave a file that no longer opens.
 pub(crate) fn check_saves(source: &Source, model: &Presentation) -> Result<(), OpError> {
-    source
-        .save(model, ibis_pptx::SaveOptions::default())
-        .map(drop)
-        .map_err(|e| OpError { index: None, message: format!("the file cannot be saved with this change: {e}") })
+    let refused = |e: String| OpError { index: None, message: format!("the file cannot be saved with this change: {e}") };
+    let bytes = source.save(model, ibis_pptx::SaveOptions::default()).map_err(|e| refused(e.to_string()))?;
+    ibis_pptx::open(bytes).map(drop).map_err(|e| refused(format!("the file written would not open again ({e})")))
 }
 
 /// An empty file of the kind `name`'s extension names (`.pptx`: one title slide; `.docx`: one empty paragraph;

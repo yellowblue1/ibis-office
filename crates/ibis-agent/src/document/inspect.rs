@@ -3,7 +3,8 @@
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! The document as the agent reads it: the blocks of its body in order (paragraphs and tables), each with its id, and
 //! the paragraph styles it can be given. The ids are the document's: they stay while it is open, and are what
-//! [`crate::Op`]s name; a file is numbered as it is read, so the same bytes give the same ids.
+//! [`Op`](crate::document::Op)s name; a file is numbered as it is read, so the same bytes give the same ids. An id
+//! once given is not given again while the file is open, even after its block is deleted.
 
 use ibis_doc_model::Presentation;
 use ibis_doc_model::flow::{Block, FlowDocument, FlowParagraph, FlowStyles, StyleKind};
@@ -17,6 +18,10 @@ pub struct Inspection {
     /// The paragraph styles `set_style` and `insert_paragraphs` take, by name.
     pub styles: Vec<String>,
     pub blocks: Vec<BlockInfo>,
+    /// Whether the document has tracked changes (変更履歴) not yet accepted or rejected: it is shown as it reads once
+    /// they are accepted, and is not edited until the person accepts or rejects them.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub revisions: bool,
     /// The paragraphs of the header and the footer (of the last section's pages), read only.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub header: Vec<String>,
@@ -49,13 +54,14 @@ pub struct BlockInfo {
 
 pub fn inspect(model: &Presentation, name: &str, dirty: bool) -> Inspection {
     let Some(doc) = model.flow.as_deref() else {
-        return Inspection { name: name.to_string(), dirty, styles: Vec::new(), blocks: Vec::new(), header: Vec::new(), footer: Vec::new() };
+        return Inspection { name: name.to_string(), dirty, styles: Vec::new(), blocks: Vec::new(), revisions: false, header: Vec::new(), footer: Vec::new() };
     };
     Inspection {
         name: name.to_string(),
         dirty,
         styles: super::ops::offered_styles(&doc.styles).into_iter().map(|s| s.name).collect(),
         blocks: doc.body.iter().map(|b| block_info(doc, b)).collect(),
+        revisions: super::ops::has_revisions(doc),
         header: paragraphs(&doc.header),
         footer: paragraphs(&doc.footer),
     }
@@ -84,9 +90,16 @@ fn paragraphs(blocks: &[Block]) -> Vec<String> {
     blocks.iter().filter_map(|b| if let Block::Paragraph(p) = b { Some(text(p)) } else { None }).collect()
 }
 
-/// One character for each of the paragraph's positions, as the operations count them.
+/// One character for each of the paragraph's positions, as the operations count them. Text a tracked change deleted is
+/// left out (the document as it reads once the changes are accepted); such a document is not edited, so the positions
+/// it would shift are never counted.
 pub(super) fn text(p: &FlowParagraph) -> String {
-    p.text().replace('\u{b}', "\n")
+    let text = if p.runs.iter().any(|r| r.revision.as_ref().is_some_and(|v| v.kind.is_delete())) {
+        FlowParagraph { runs: p.runs.iter().filter(|r| !r.revision.as_ref().is_some_and(|v| v.kind.is_delete())).cloned().collect(), ..p.clone() }.text()
+    } else {
+        p.text()
+    };
+    text.replace('\u{b}', "\n")
 }
 
 fn style_name(styles: &FlowStyles, p: &FlowParagraph) -> Option<String> {

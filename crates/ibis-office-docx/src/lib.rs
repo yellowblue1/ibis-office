@@ -569,6 +569,13 @@ impl FormatEditor for Document {
         editor.sync_document_view_mode();
     }
 
+    /// As an edit of the window's own does (`run_flow`): the offsets the extra selections hold may have moved.
+    fn edited_from_outside(editor: &mut SlideEditor) {
+        if let Some(state) = editor.doc_state_mut() {
+            state.extra_selections.clear();
+        }
+    }
+
     /// The other window's edit: the view mode follows and the pages are laid out again.
     fn model_from_peer(editor: &mut SlideEditor) {
         editor.sync_document_view_mode();
