@@ -1178,6 +1178,16 @@ impl Document {
     /// Apply `commands` as one undo step. If any command fails, the ones
     /// before it are rolled back and the document is unchanged.
     pub fn execute(&mut self, commands: Vec<Command>) -> Result<(), EditError> {
+        self.execute_recording(commands, true)
+    }
+
+    /// [`Document::execute`] for an edit that is not the person's (an AI agent's): what 繰り返し (F4) repeats stays the
+    /// person's last edit.
+    pub fn execute_unrepeated(&mut self, commands: Vec<Command>) -> Result<(), EditError> {
+        self.execute_recording(commands, false)
+    }
+
+    fn execute_recording(&mut self, commands: Vec<Command>, record_repeat: bool) -> Result<(), EditError> {
         let repeat:Vec<_> = commands.iter().filter_map(|command|match command {
             Command::Sheet(edit @ (crate::SheetCommand::SetFormat{..}|crate::SheetCommand::Insert{..}|crate::SheetCommand::Delete{..}|crate::SheetCommand::ClearFormats{..}|crate::SheetCommand::ShiftCells{..})) => Some(edit.clone()),
             _ => None,
@@ -1189,6 +1199,9 @@ impl Document {
             }
             self.undo.push(inverses);
             self.redo.clear();
+            if !record_repeat {
+                return Ok(());
+            }
             let same_target = self.repeat_sheet_group && !repeat.is_empty() && !self.repeat_sheet.is_empty() && repeat.iter().chain(&self.repeat_sheet).all(|edit|match (repeat.first(),edit) {
                 (Some(crate::SheetCommand::SetFormat{slide:a,ranges:x,..}),crate::SheetCommand::SetFormat{slide:b,ranges:y,..}) => a==b && x==y,
                 _ => false,

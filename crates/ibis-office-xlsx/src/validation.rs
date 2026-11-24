@@ -11,6 +11,7 @@ use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::component::v_flex;
 use gpui_kit::*;
 use crate::shell::palette::rgb;
+use ibis_doc_model::sheet_validation::{self, Breach};
 use ibis_doc_model::{CellEdit, CellInput, CellValue, Command, SheetCommand, Sheet, Validation};
 
 use crate::shell::chrome::{MenuEntry, MenuItem, SidebarPanel, fill_menu};
@@ -148,45 +149,6 @@ pub(crate) struct ValidationWarning {
     pub(crate) edit: super::cell_edit::CellEdit,
 }
 
-/// The rule over a cell (the last one listed wins, as Excel keeps one).
-pub(crate) fn rule_at(sheet: &Sheet, row: u32, column: u32) -> Option<&Validation> {
-    sheet.validations.iter().rev().find(|v| v.ranges.iter().any(|r| (r.first_row..=r.last_row).contains(&row) && (r.first_column..=r.last_column).contains(&column)))
-}
-
-/// A list rule's items: the text in quotes split at commas, or the
-/// values of a range on the same sheet.
-pub(crate) fn list_items(sheet: &Sheet, rule: &Validation) -> Vec<String> {
-    let Some(f) = rule.formula1.as_deref() else { return Vec::new() };
-    let f = f.trim();
-    if let Some(inner) = f.strip_prefix('"').and_then(|x| x.strip_suffix('"')) {
-        return inner.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-    }
-    let area = f.rsplit('!').next().unwrap_or(f).replace('$', "");
-    let Some(r) = parse_area(&area) else { return Vec::new() };
-    let mut out = Vec::new();
-    for row in r.0..=r.2 {
-        for column in r.1..=r.3 {
-            if let Some(c) = sheet.cell(row, column)
-                && !c.text.is_empty()
-            {
-                out.push(c.text.clone());
-            }
-        }
-    }
-    out
-}
-
-/// A value of a list a formula gave, as the list shows it.
-fn list_text(value: &CellValue) -> String {
-    match value {
-        CellValue::Number(n) => ibis_calc::eval::number_to_text(*n),
-        CellValue::Text(t) => t.clone(),
-        CellValue::Bool(b) => if *b { "TRUE".into() } else { "FALSE".into() },
-        CellValue::Error(e) => e.as_str().to_string(),
-        CellValue::Empty => String::new(),
-    }
-}
-
 /// Collect unique text candidates from the same column of (`row`, `column`) in Excel's
 /// "Pick from Drop-down List" (⌥↓ / Alt+↓) style.
 pub(crate) fn column_pick_list_items(sheet: &Sheet, row: u32, column: u32) -> Vec<String> {
@@ -244,110 +206,13 @@ pub(crate) fn column_pick_list_items(sheet: &Sheet, row: u32, column: u32) -> Ve
     texts
 }
 
-/// `A1` or `A1:B3` as (first row, first column, last row, last column).
-fn parse_area(text: &str) -> Option<(u32, u32, u32, u32)> {
-    let one = |t: &str| -> Option<(u32, u32)> {
-        let split = t.find(|c: char| c.is_ascii_digit())?;
-        let column = ibis_calc::formula::parser::column_index(&t[..split])?;
-        let row: u32 = t[split..].parse().ok()?;
-        Some((row.checked_sub(1)?, column))
-    };
-    let (a, b) = text.split_once(':').unwrap_or((text, text));
-    let (r0, c0) = one(a)?;
-    let (r1, c1) = one(b)?;
-    Some((r0.min(r1), c0.min(c1), r0.max(r1), c0.max(c1)))
-}
-
-/// Whether `value` keeps the rule.
-pub(crate) fn keeps(sheet: &Sheet, rule: &Validation, value: &CellValue) -> bool {
-    if value.is_empty() {
-        return rule.allow_blank || rule.kind == "none";
-    }
-    let bound = |f: &Option<String>| -> Option<f64> {
-        let f = f.as_deref()?;
-        f.trim().parse::<f64>().ok().or_else(|| {
-            // A cell of the same sheet.
-            let area = f.rsplit('!').next().unwrap_or(f).replace('$', "");
-            let (r, c, _, _) = parse_area(&area)?;
-            match sheet.cell(r, c).map(|x| &x.value) {
-                Some(CellValue::Number(n)) => Some(*n),
-                _ => None,
-            }
-        })
-    };
-    let compare = |v: f64| -> bool {
-        let (a, b) = (bound(&rule.formula1), bound(&rule.formula2));
-        match (rule.operator.as_str(), a) {
-            ("between", Some(a)) => b.is_some_and(|b| v >= a.min(b) && v <= a.max(b)),
-            ("notBetween", Some(a)) => b.is_some_and(|b| v < a.min(b) || v > a.max(b)),
-            ("equal", Some(a)) => v == a,
-            ("notEqual", Some(a)) => v != a,
-            ("greaterThan", Some(a)) => v > a,
-            ("lessThan", Some(a)) => v < a,
-            ("greaterThanOrEqual", Some(a)) => v >= a,
-            ("lessThanOrEqual", Some(a)) => v <= a,
-            _ => true,
-        }
-    };
-    match rule.kind.as_str() {
-        "list" => {
-            let text = match value {
-                CellValue::Number(n) => ibis_calc::eval::number_to_text(*n),
-                CellValue::Text(t) => t.clone(),
-                CellValue::Bool(b) => if *b { "TRUE".into() } else { "FALSE".into() },
-                CellValue::Error(e) => e.as_str().to_string(),
-                CellValue::Empty => String::new(),
-            };
-            list_items(sheet, rule).iter().any(|i| i.eq_ignore_ascii_case(&text))
-        }
-        "whole" => matches!(value, CellValue::Number(n) if n.fract() == 0.0 && compare(*n)),
-        "decimal" | "date" | "time" => matches!(value, CellValue::Number(n) if compare(*n)),
-        "textLength" => {
-            let len = match value {
-                CellValue::Text(t) => t.chars().count(),
-                CellValue::Number(n) => ibis_calc::eval::number_to_text(*n).chars().count(),
-                _ => 0,
-            };
-            compare(len as f64)
-        }
-        _ => true,
-    }
-}
-
-/// Whether `value` put into (`row`, `column`) keeps the rule: a custom
-/// rule's formula worked out with the value in the cell (its references
-/// moved from the rule's first cell to this one), true unless it gives
-/// FALSE or 0 (as Excel).
-pub(crate) fn keeps_at(sheet: &Sheet, rule: &Validation, value: &CellValue, row: u32, column: u32) -> bool {
-    if rule.kind != "custom" {
-        return keeps(sheet, rule, value);
-    }
-    if value.is_empty() && rule.allow_blank {
-        return true;
-    }
-    let (Some(formula), Some(base)) = (rule.formula1.as_deref(), rule.base()) else { return true };
-    let mut with = sheet.clone();
-    let mut cell = with.cell(row, column).cloned().unwrap_or(ibis_doc_model::SheetCell { runs: None, phonetic: None, row, column, value: CellValue::Empty, text: String::new(), kind: ibis_doc_model::CellKind::Empty, formula: None, style: 0 });
-    cell.value = value.clone();
-    cell.formula = None;
-    with.put_cell(row, column, Some(cell));
-    let shifted = ibis_calc::formula::shift(formula, row as i64 - base.0 as i64, column as i64 - base.1 as i64);
-    let book = super::conditional::OneSheet(&with);
-    match ibis_calc::recalc::evaluate(&book, (with.book_context.sheet_index, row, column), &shifted).0 {
-        CellValue::Bool(b) => b,
-        CellValue::Number(n) => n != 0.0,
-        CellValue::Error(_) => false,
-        _ => true,
-    }
-}
-
 #[ibis_office_macros::editor_ext(ValidationExt)]
 impl SlideEditor {
     /// The rule over the selected cell.
     pub fn current_rule(&self) -> Option<Validation> {
         let (column, row) = self.current_cell()?;
         let (_, sheet) = self.current_sheet()?;
-        rule_at(sheet, row, column).cloned()
+        sheet_validation::rule_at(sheet, row, column).cloned()
     }
 
     fn target_validation_ranges(&self, apply_to_same: bool) -> Vec<ibis_doc_model::CellRange> {
@@ -428,135 +293,35 @@ impl SlideEditor {
         Some(next)
     }
 
+    /// The selected cell's list items, as its drop-down shows them.
     pub(crate) fn validation_list_items_in_book(&self, rule: &Validation) -> Vec<String> {
-        let Some(f) = rule.formula1.as_deref() else { return Vec::new() };
-        let f = f.trim();
-        if let Some(inner) = f.strip_prefix('"').and_then(|x| x.strip_suffix('"')) {
-            return inner.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-        }
-        let clean = f.trim_start_matches('=').trim();
-        if let Ok(resolved) = self.resolve_range(clean) {
-            let mut out = Vec::new();
-            for row in resolved.range.first_row..=resolved.range.last_row {
-                for column in resolved.range.first_column..=resolved.range.last_column {
-                    if let Some(c) = resolved.sheet.cell(row, column)
-                        && !c.text.is_empty()
-                    {
-                        out.push(c.text.clone());
-                    }
-                }
-            }
-            return out;
-        }
-        // A formula (`OFFSET(..)`, `INDIRECT(..)`, a defined name, ...; GitHub issue #154): its values, worked out for the cell.
-        if let Some(index) = self.presentation().workbook.as_ref().and_then(|w| w.sheets.iter().position(|s| s.slide == Some(self.current_slide))) {
-            let (column, row) = self.current_cell().unwrap_or((0, 0));
-            let view = ibis_doc_model::sheet_calc::BookView::new(self.presentation());
-            if let Some(values) = ibis_calc::recalc::evaluate_list(&view, (index, row, column), clean) {
-                return values.iter().map(list_text).filter(|t| !t.is_empty()).collect();
-            }
-        }
-        if let Some((_, sheet)) = self.current_sheet() {
-            return list_items(sheet, rule);
-        }
-        Vec::new()
+        let (column, row) = self.current_cell().unwrap_or((0, 0));
+        sheet_validation::list_items(self.presentation(), self.current_slide, rule, row, column)
     }
 
-    pub(crate) fn keeps_validation_in_book(&self, rule: &Validation, value: &CellValue, row: u32, column: u32) -> bool {
-        let Some((_, sheet)) = self.current_sheet() else { return true };
-        if value.is_empty() {
-            return rule.allow_blank || rule.kind == "none";
-        }
-        if rule.kind == "custom" {
-            return keeps_at(sheet, rule, value, row, column);
-        }
-        let bound = |f: &Option<String>| -> Option<f64> {
-            let f = f.as_deref()?.trim();
-            if let Ok(n) = f.parse::<f64>() {
-                return Some(n);
-            }
-            let clean = f.trim_start_matches('=').trim();
-            if let Ok(resolved) = self.resolve_range(clean) {
-                if let Some(CellValue::Number(n)) = resolved.sheet.cell(resolved.range.first_row, resolved.range.first_column).map(|x| &x.value) {
-                    return Some(*n);
-                }
-            }
-            let book = ibis_doc_model::sheet_calc::BookView::new(self.presentation());
-            let sheet_idx = self.presentation().slides.iter().position(|s| s.id == self.current_slide).unwrap_or(0);
-            match ibis_calc::recalc::evaluate(&book, (sheet_idx, row, column), clean).0 {
-                CellValue::Number(n) => Some(n),
-                _ => None,
-            }
-        };
-        let compare = |v: f64| -> bool {
-            let (a, b) = (bound(&rule.formula1), bound(&rule.formula2));
-            match (rule.operator.as_str(), a) {
-                ("between", Some(a)) => b.is_some_and(|b| v >= a.min(b) && v <= a.max(b)),
-                ("notBetween", Some(a)) => b.is_some_and(|b| v < a.min(b) || v > a.max(b)),
-                ("equal", Some(a)) => v == a,
-                ("notEqual", Some(a)) => v != a,
-                ("greaterThan", Some(a)) => v > a,
-                ("lessThan", Some(a)) => v < a,
-                ("greaterThanOrEqual", Some(a)) => v >= a,
-                ("lessThanOrEqual", Some(a)) => v <= a,
-                _ => true,
-            }
-        };
-        match rule.kind.as_str() {
-            "list" => {
-                let text = match value {
-                    CellValue::Number(n) => ibis_calc::eval::number_to_text(*n),
-                    CellValue::Text(t) => t.clone(),
-                    CellValue::Bool(b) => if *b { "TRUE".into() } else { "FALSE".into() },
-                    CellValue::Error(e) => e.as_str().to_string(),
-                    CellValue::Empty => String::new(),
-                };
-                { let items = self.validation_list_items_in_book(rule); let half = ibis_calc::functions::to_half_width(&text); items.iter().any(|i| i.eq_ignore_ascii_case(&text) || i.eq_ignore_ascii_case(&half)) }
-            }
-            "whole" => matches!(value, CellValue::Number(n) if n.fract() == 0.0 && compare(*n)),
-            "decimal" | "date" | "time" => matches!(value, CellValue::Number(n) if compare(*n)),
-            "textLength" => {
-                let len = match value {
-                    CellValue::Text(t) => t.chars().count(),
-                    CellValue::Number(n) => ibis_calc::eval::number_to_text(*n).chars().count(),
-                    _ => 0,
-                };
-                compare(len as f64)
-            }
-            _ => keeps_at(sheet, rule, value, row, column),
-        }
-    }
-
-    /// The value a formula entered into (`row`, `column`) would give, worked out
-    /// as things stand, when the cell has a validation rule: Excel checks the
-    /// result of a formula entry against the rule as it does a typed value.
-    /// `None` when there is no rule or the engine cannot work the formula out.
+    /// The value a formula entered into (`row`, `column`) would give, when the cell has a validation rule; `None` when
+    /// there is no rule or the engine cannot work the formula out.
     pub(crate) fn formula_entry_value(&self, row: u32, column: u32, formula: &str) -> Option<CellValue> {
         let (_, sheet) = self.current_sheet()?;
-        rule_at(sheet, row, column)?;
-        let workbook = self.presentation().workbook.as_ref()?;
-        let sheet_index = workbook.sheets.iter().position(|s| s.slide == Some(self.current_slide))?;
-        let view = ibis_doc_model::sheet_calc::BookView::new(self.presentation());
-        let (value, unsupported) = ibis_calc::recalc::evaluate(&view, (sheet_index, row, column), formula);
-        (!unsupported).then_some(value)
+        sheet_validation::rule_at(sheet, row, column)?;
+        sheet_validation::formula_value(self.presentation(), self.current_slide, row, column, formula)
     }
 
     /// Whether `value` may go into (`row`, `column`): `Err` with the
     /// message when the rule refuses it (style `stop`); `Ok` with a warning
     /// message and whether it is a `warning` confirmation (`true`) or `information` (`false`).
     pub(crate) fn check_entry(&self, row: u32, column: u32, value: &CellValue) -> Result<Option<(String, bool)>, String> {
-        let Some((_, sheet)) = self.current_sheet() else { return Ok(None) };
-        let Some(rule) = rule_at(sheet, row, column) else { return Ok(None) };
-        if rule.kind == "list" && !self.keeps_validation_in_book(rule, value, row, column) {
+        let Some((how, title, text)) = sheet_validation::breach(self.presentation(), self.current_slide, row, column, value) else { return Ok(None) };
+        if how == Breach::NotListed {
             return Err("データ入力規則の制約があります。リストから選択してください。".to_string()); // i18n-ok: requested validation message
         }
-        let Some((style, title, text)) = &rule.error else { return Ok(None) };
-        if self.keeps_validation_in_book(rule, value, row, column) {
-            return Ok(None);
-        }
-        let message = if text.is_empty() { crate::shell::i18n::text("fix.validation.value-does-not-match-data").to_string() } else { text.clone() };
+        let message = if text.is_empty() { crate::shell::i18n::text("fix.validation.value-does-not-match-data").to_string() } else { text };
         let message = if title.is_empty() { message } else { format!("{title}：{message}") }; // i18n-ok（区切りの記号）
-        if style == "stop" { Err(message) } else { Ok(Some((message, style == "warning"))) }
+        match how {
+            Breach::Warning => Ok(Some((message, true))),
+            Breach::Information => Ok(Some((message, false))),
+            Breach::NotListed | Breach::Stop => Err(message),
+        }
     }
 
     /// Accept the warning-flagged entry ("はい" / Yes): keep the committed value and dismiss the confirmation card.
@@ -940,7 +705,7 @@ impl SlideEditor {
                 for r in range.first_row..=range.last_row {
                     for c in range.first_column..=range.last_column {
                         let value = sheet.cell(r, c).map_or(&CellValue::Empty, |cell| &cell.value);
-                        if !self.keeps_validation_in_book(rule, value, r, c) {
+                        if !sheet_validation::keeps(self.presentation(), self.current_slide, rule, value, r, c) {
                             invalid.push((c, r));
                         }
                     }
@@ -1133,19 +898,7 @@ impl SlideEditor {
 
 #[cfg(test)]
 mod tests {
-    use super::{CellValue, Sheet, Validation, keeps};
-
-    #[test]
-    fn lists_and_numbers() {
-        let sheet = Sheet::default();
-        let list = Validation { kind: "list".into(), formula1: Some(r#""りんご,みかん""#.into()), ..Default::default() };
-        assert!(keeps(&sheet, &list, &CellValue::Text("みかん".into())));
-        assert!(!keeps(&sheet, &list, &CellValue::Text("ぶどう".into())));
-        let whole = Validation { kind: "whole".into(), operator: "between".into(), formula1: Some("1".into()), formula2: Some("10".into()), ..Default::default() };
-        assert!(keeps(&sheet, &whole, &CellValue::Number(5.0)));
-        assert!(!keeps(&sheet, &whole, &CellValue::Number(5.5)));
-        assert!(!keeps(&sheet, &whole, &CellValue::Number(11.0)));
-    }
+    use super::{CellValue, Sheet};
 
     #[test]
     fn test_column_pick_list_items() {

@@ -99,21 +99,7 @@ pub(crate) fn replace_text_with_options(text: &str, query: &str, with: &str, opt
         }
         return None;
     }
-    // Case-insensitive partial replacement
-    let lower = text.to_lowercase();
-    let q = query.to_lowercase();
-    if !lower.contains(&q) || lower.len() != text.len() {
-        return text.contains(query).then(|| text.replace(query, with));
-    }
-    let mut out = String::new();
-    let mut at = 0;
-    while let Some(i) = lower[at..].find(&q) {
-        out.push_str(&text[at..at + i]);
-        out.push_str(with);
-        at += i + q.len();
-    }
-    out.push_str(&text[at..]);
-    Some(out)
+    ibis_doc_model::sheet::replace_ignoring_case(text, query, with).map(|(replaced, _)| replaced)
 }
 
 /// Replace `query` in `text` without regard to case (legacy default).

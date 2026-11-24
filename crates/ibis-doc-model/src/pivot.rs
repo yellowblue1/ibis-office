@@ -1018,6 +1018,40 @@ pub struct PivotDetails {
 }
 
 impl PivotTable {
+    /// The cells of the report filters (a row each, two columns), without the blank row under them.
+    pub fn page_block(&self) -> Option<CellRange> {
+        let pages = self.page_fields.len() as u32;
+        (pages > 0).then(|| {
+            let first = self.location.first_row.saturating_sub(pages + 1);
+            CellRange { first_row: first, last_row: first + pages - 1, first_column: self.location.first_column, last_column: self.location.first_column + 1 }
+        })
+    }
+
+    /// The whole of the table: its place and its report filters with the blank row under them.
+    pub fn area(&self) -> CellRange {
+        let pages = self.page_fields.len() as u32;
+        let top = if pages > 0 { self.location.first_row.saturating_sub(pages + 1) } else { self.location.first_row };
+        CellRange { first_row: top, ..self.location }
+    }
+
+    /// Whether changing the cells of `range` changes the table (its place or its report filters): Excel refuses deleting,
+    /// pasting, filling, merging or cutting there.
+    pub fn touches(&self, range: &CellRange) -> bool {
+        let meets = |a: &CellRange, b: &CellRange| a.first_row <= b.last_row && b.first_row <= a.last_row && a.first_column <= b.last_column && b.first_column <= a.last_column;
+        meets(range, &self.location) || self.page_block().is_some_and(|b| meets(range, &b))
+    }
+
+    /// Whether inserting rows (`rows`) or columns before `at`, or (`at` `None`) deleting `first..=last`, goes through the
+    /// table, which Excel refuses.
+    pub fn crossed_by_lines(&self, rows: bool, first: u32, last: u32, at: Option<u32>) -> bool {
+        let a = self.area();
+        let (lo, hi) = if rows { (a.first_row, a.last_row) } else { (a.first_column, a.last_column) };
+        match at {
+            Some(at) => lo < at && at <= hi,
+            None => first <= hi && lo <= last,
+        }
+    }
+
     /// Each row field's label column (from the table's first) and indent:
     /// a compact field shares its column with the compact field before it,
     /// one level further in.

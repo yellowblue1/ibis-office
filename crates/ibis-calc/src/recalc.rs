@@ -816,6 +816,21 @@ pub fn evaluate(book: &dyn Book, cell: CellId, formula: &str) -> (CellValue, boo
     }
 }
 
+/// The cells a formula refers to for a cell (`A1:A3`, `Sheet2!B1`, a defined name, `OFFSET(A1,0,0,3,1)`), when what it
+/// gives is a reference; `None` when it gives a value or the engine cannot work it out.
+pub fn evaluate_reference(book: &dyn Book, cell: CellId, formula: &str) -> Option<Vec<crate::eval::Area>> {
+    let expr = parse(formula).ok()?;
+    let mut ctx = Ctx::new(book, &crate::eval::Stored, cell.0, cell.1, cell.2);
+    let v = ctx.eval(&expr);
+    if ctx.unsupported || ctx.aborted {
+        return None;
+    }
+    match v {
+        crate::eval::Value::Ref(areas) => Some(areas.to_vec()),
+        _ => None,
+    }
+}
+
 /// The values a formula gives for a cell, as a list (a range's or an array's values row by row, blank ones left out; one value as
 /// one): what a data validation list takes from a formula such as `OFFSET(A1,0,0,3,1)` or `INDIRECT("B1:B3")`. `None` when the
 /// engine cannot work it out or it gives an error.

@@ -45,6 +45,15 @@ fn width_chars(size: Emu, digit: f64) -> f64 {
     (pt / digit * 256.0).round() / 256.0
 }
 
+/// The width of a column and the height of a row past those `sheet` keeps, as the model grows its lists with them
+/// (`ibis_doc_model::sheet_command`).
+fn past_sizes(sheet: &Sheet) -> (Emu, Emu) {
+    (
+        if sheet.default_column > 0 { sheet.default_column } else { 54 * EMU_PER_POINT },
+        if sheet.default_row > 0 { sheet.default_row } else { 20 * EMU_PER_POINT },
+    )
+}
+
 pub(crate) fn write_sizes(doc: &mut XmlDocument, old: &Sheet, new: &Sheet, digit: f64) -> Result<(), Error> {
     let root = doc.root_element().ok_or_else(|| Error::new("シートの XML が空です"))?;
     let prefix = prefix_of(doc, root);
@@ -52,15 +61,14 @@ pub(crate) fn write_sizes(doc: &mut XmlDocument, old: &Sheet, new: &Sheet, digit
     // `customWidth`, one fitted to the contents, a column hidden or shown again) except a width the sheet chose by itself (a number
     // entered wider than the column), so the file opens with that column as it was (as Excel's); a fixed width given back to the sheet
     // is a change, and saved.
-    let in_range = |c: u32| (c as usize) < new.columns.len() && (c as usize) < old.columns.len();
+    // A column or row past those the sheet kept when read was of its default size (the sheet keeps one once it is given a
+    // size, or a cell past it is entered).
+    let (old_column, old_row) = past_sizes(old);
     let mut runs: Vec<(u32, u32, Emu, bool)> = Vec::new();
-    for c in 0..new.columns.len().max(old.columns.len()) as u32 {
-        if !in_range(c) {
-            continue;
-        }
+    for c in 0..new.columns.len() as u32 {
         let w = new.columns[c as usize];
         let (fixed, was_fixed) = (new.custom_columns.contains(&c), old.custom_columns.contains(&c));
-        let changed = old.columns[c as usize] != w || fixed != was_fixed;
+        let changed = old.columns.get(c as usize).copied().unwrap_or(old_column) != w || fixed != was_fixed;
         if !changed || (w != 0 && new.widened_columns.contains(&c) && !was_fixed) {
             continue;
         }
@@ -137,7 +145,7 @@ pub(crate) fn write_sizes(doc: &mut XmlDocument, old: &Sheet, new: &Sheet, digit
                 if w == 0 {
                     doc.set_attr(e, "hidden", "1");
                     if doc.attr(e, "width").is_none() {
-                        doc.set_attr(e, "width", &number(width_chars(old.columns[a as usize].max(1), digit)));
+                        doc.set_attr(e, "width", &number(width_chars(old.columns.get(a as usize).copied().unwrap_or(old_column).max(1), digit)));
                     }
                 } else {
                     doc.remove_attr(e, "hidden");
@@ -153,7 +161,12 @@ pub(crate) fn write_sizes(doc: &mut XmlDocument, old: &Sheet, new: &Sheet, digit
     }
     // Rows.
     let data = doc.child(root, "sheetData").ok_or_else(|| Error::new("シートに sheetData がありません"))?;
-    let changed_rows: Vec<u32> = (0..new.rows.len().min(old.rows.len()) as u32).filter(|&r| (old.rows[r as usize] != new.rows[r as usize] && new.fitted_rows.get(&r) != Some(&new.rows[r as usize])) || (new.rows[r as usize] > 0 && new.custom_rows.contains(&r) != old.custom_rows.contains(&r))).collect();
+    let changed_rows: Vec<u32> = (0..new.rows.len() as u32)
+        .filter(|&r| {
+            let (was, now) = (old.rows.get(r as usize).copied().unwrap_or(old_row), new.rows[r as usize]);
+            (was != now && new.fitted_rows.get(&r) != Some(&now)) || (now > 0 && new.custom_rows.contains(&r) != old.custom_rows.contains(&r))
+        })
+        .collect();
     for r in changed_rows {
         let h = new.rows[r as usize];
         let found = doc.children_named(data, "row").find(|&n| doc.attr(n, "r").and_then(|v| v.parse::<u32>().ok()) == Some(r + 1));

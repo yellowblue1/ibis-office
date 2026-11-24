@@ -182,7 +182,7 @@ impl Session {
         let current = self.model().clone();
         let ids = self.document.ids();
         let planned = plan(ops, &current, &self.source, &mut || ids.new_shape_id().0)?;
-        self.document.execute(planned.commands).map_err(|e| OpError { index: None, message: e.to_string() })?;
+        self.document.execute_unrepeated(planned.commands).map_err(|e| OpError { index: None, message: e.to_string() })?;
         Ok(Applied { created: planned.created, replaced: planned.replaced })
     }
 

@@ -45,26 +45,6 @@ fn contains(r: &CellRange, row: u32, column: u32) -> bool {
     (r.first_row..=r.last_row).contains(&row) && (r.first_column..=r.last_column).contains(&column)
 }
 
-fn intersects(a: &CellRange, b: &CellRange) -> bool {
-    a.first_row <= b.last_row && b.first_row <= a.last_row && a.first_column <= b.last_column && b.first_column <= a.last_column
-}
-
-/// The cells of the report filters (a row each, two columns), without the blank row under them.
-fn page_block(p: &PivotTable) -> Option<CellRange> {
-    let pages = p.page_fields.len() as u32;
-    (pages > 0).then(|| {
-        let first = p.location.first_row.saturating_sub(pages + 1);
-        CellRange { first_row: first, last_row: first + pages - 1, first_column: p.location.first_column, last_column: p.location.first_column + 1 }
-    })
-}
-
-/// The whole of a table: its place and its report filters with the blank row under them.
-fn area(p: &PivotTable) -> CellRange {
-    let pages = p.page_fields.len() as u32;
-    let top = if pages > 0 { p.location.first_row.saturating_sub(pages + 1) } else { p.location.first_row };
-    CellRange { first_row: top, ..p.location }
-}
-
 fn cell_text(v: &CellValue) -> String {
     match v {
         CellValue::Text(t) => t.clone(),
@@ -107,7 +87,7 @@ impl SlideEditor {
     /// What the cell at (`row`, `column`) is, and the table (its index) when it is in one.
     pub(crate) fn pivot_part_at(&self, slide: SlideId, row: u32, column: u32) -> Option<(usize, PivotPart)> {
         let pivots = self.pivots_of(slide);
-        let index = pivots.iter().position(|p| contains(&p.location, row, column) || page_block(p).is_some_and(|b| contains(&b, row, column)))?;
+        let index = pivots.iter().position(|p| contains(&p.location, row, column) || p.page_block().is_some_and(|b| contains(&b, row, column)))?;
         let mut pivot = pivots[index].clone();
         if let Some(data) = ibis_pptx::pivot_data(self.presentation(), slide, index) {
             pivot.fill_shared(&data);
@@ -119,7 +99,7 @@ impl SlideEditor {
             let text = cell_text(&cell.value);
             let part = match cell.role {
                 PivotRole::Value => PivotPart::Locked,
-                PivotRole::PageValue => page_block(&pivot).map_or(PivotPart::Locked, |b| PivotPart::PageItem((row - b.first_row) as usize)),
+                PivotRole::PageValue => pivot.page_block().map_or(PivotPart::Locked, |b| PivotPart::PageItem((row - b.first_row) as usize)),
                 _ => match text.strip_prefix(SENTINEL) {
                     Some("row") => PivotPart::Rename(Rename::RowHeader),
                     Some("col") => PivotPart::Rename(Rename::ColHeader),
@@ -156,7 +136,7 @@ impl SlideEditor {
 
     /// Whether changing the cells of `ranges` (delete, paste, fill, merge, cut) would change a pivot table: then says so.
     pub(crate) fn pivot_refuses_ranges(&mut self, ranges: &[CellRange], cx: &mut Context<Self>) -> bool {
-        let hit = self.pivots_of(self.current_slide).iter().any(|p| ranges.iter().any(|r| intersects(r, &p.location) || page_block(p).is_some_and(|b| intersects(r, &b))));
+        let hit = self.pivots_of(self.current_slide).iter().any(|p| ranges.iter().any(|r| p.touches(r)));
         if hit {
             self.pivot_notice("xlsx.pivot.affects-pivot", cx);
         }
@@ -166,14 +146,7 @@ impl SlideEditor {
     /// Whether inserting rows (columns) at `at`, or deleting `first..=last`, goes through a pivot table: then says so.
     /// `at` is the line the new ones come before (`None`: deleting).
     pub(crate) fn pivot_refuses_lines(&mut self, rows: bool, first: u32, last: u32, at: Option<u32>, cx: &mut Context<Self>) -> bool {
-        let hit = self.pivots_of(self.current_slide).iter().any(|p| {
-            let a = area(p);
-            let (lo, hi) = if rows { (a.first_row, a.last_row) } else { (a.first_column, a.last_column) };
-            match at {
-                Some(at) => lo < at && at <= hi,
-                None => first <= hi && lo <= last,
-            }
-        });
+        let hit = self.pivots_of(self.current_slide).iter().any(|p| p.crossed_by_lines(rows, first, last, at));
         if hit {
             self.pivot_notice("xlsx.pivot.affects-pivot", cx);
         }
