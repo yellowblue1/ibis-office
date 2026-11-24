@@ -2069,6 +2069,29 @@ impl Sheet {
         ibis_calc::formula::this_row_to_display(formula, table)
     }
 
+    /// The number format Excel gives a cell of General that `formula` (without `=`) is entered into: that of the first cell
+    /// of this sheet it refers to, for arithmetic and a few functions (not for counts, DATEDIF, EDATE, …).
+    pub fn referenced_format(&self, formula: &str) -> Option<String> {
+        let upper = formula.trim_start().to_ascii_uppercase();
+        if let Some(paren) = upper.find('(') {
+            let name = upper[..paren].trim_start_matches(['+', '-', '@']);
+            let inherits = ["SUM", "AVERAGE", "MIN", "MAX", "ROUND", "ROUNDUP", "ROUNDDOWN", "ABS", "IF", "MEDIAN", "SUBTOTAL"];
+            if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_') && !name.is_empty() && !inherits.contains(&name) {
+                return None;
+            }
+        }
+        let mut first = None;
+        ibis_calc::formula::rewrite_references(formula, |r| {
+            if first.is_none() && r.sheet.is_none() && !r.whole_columns && !r.whole_rows {
+                first = Some((r.start.row, r.start.column));
+            }
+            Some(r.clone())
+        });
+        let (row, column) = first?;
+        let code = &self.styles[self.cell(row, column)?.style as usize].number_format;
+        (code != "General" && code != "@").then(|| code.clone())
+    }
+
     /// The cell at a row and column, if it holds a value or a format.
     pub fn cell(&self, row: u32, column: u32) -> Option<&SheetCell> {
         self.cells.binary_search_by_key(&(row, column), |c| (c.row, c.column)).ok().map(|i| &self.cells[i])

@@ -5,8 +5,9 @@ edit the open file. The agent's edit goes through the editor's undo as the perso
 whole, and what the person changed stays. The same operations run on a file with no window: `ibis-agent` (crate
 `crates/ibis-agent`).
 
-A presentation (`.pptx`) and a document (`.docx`) are edited, each with a summary and operations of its own (below); the
-summary's `kind` (`presentation`, `document`) says which the file is.
+Each kind of file has its summary and operations of its own: a presentation's (`.pptx`), a document's (`.docx`) and a
+workbook's (`.xlsx`), below. The summary's `kind` says which (`presentation`, `document`, `workbook`); operations of another kind
+are refused.
 
 ## Messages
 
@@ -102,16 +103,60 @@ marked as final is not edited.
 | `insert_table_row` | `table`, `at?` (0-based; the end) |
 | `delete_table_row` | `table`, `at` |
 
+## A workbook
+
+`inspect` gives the sheets in the workbook's order, each with its `id`, `name`, `number` (1-based, hidden sheets counted),
+`hidden` (a hidden sheet has no `id` and is not edited), `other` (a chart sheet: no cells), `protected` (シートの保護: its
+cells are not changed), `used` (the range from the first to the last cell with something in it, `A1:F42`), `merged` (the
+merged ranges) and its `cells` with a value or a formula, by row: `at` (`B2`), `value` (a string, a number or a logical
+value; an error as its text, `#DIV/0!`), `formula` (`=SUM(B3:B9)`) and `text`, what the cell shows when that is not the value
+written out (a number format, a date: `{"at": "A5", "value": 46350, "text": "2026/11/24"}`). A sheet lists at most 2000 cells,
+the first rows first; `more` says how many were left out.
+
+The ids stay while the workbook is open. A file read again is numbered again (the same bytes give the same ids).
+
+A sheet is named by its id, its name (in any case, as Excel), or the `as` name of one an earlier operation of the list made.
+Cells and ranges are in A1 notation (`B2`, `A1:C3`), rows by their numbers (`1:3`), columns by their letters (`A:C`), colours
+`#RRGGBB`. A list is applied whole or not at all, as a presentation's; the editor then shows the sheet the last operation named.
+
+`set_cells` puts values as a person typing them would: a string starting with `=` is a formula (`=sum(a1:a3)` is entered as
+`=SUM(A1:A3)`; one that does not read is refused); a number, a percentage or a date written as typed (`1,234`, `50%`,
+`2026/11/24`) is that number, and a cell of General takes the number format Excel gives it; `TRUE` and `FALSE` are logical
+values; a leading `'` keeps the rest as text, a sign-led word (`-x`) is text, and in a cell formatted as text (`@`) everything
+is. A JSON number or logical value is put as it is; `null` or `""` empties the cell. What depends on the cells is calculated
+again. The editor's AutoCorrect and the links it makes of typed addresses are not applied.
+
+| `op` | Fields |
+| --- | --- |
+| `set_cells` | `sheet`, `at` (the top-left cell), `values` (rows of values) |
+| `clear` | `sheet`, `range` (values and formulas; the formats stay) |
+| `add_sheet` | `name?` (`SheetN`, the first not taken), `index?` (0-based; the end), `as?` |
+| `rename_sheet` | `sheet`, `name` (1 to 31 characters, none of `[ ] : * ? / \`, not another sheet's) |
+| `delete_sheet` | `sheet` (not the last one shown; formulas that refer to it get `#REF!`) |
+| `move_sheet` | `sheet`, `index` (0-based, its place after the move) |
+| `insert_rows` | `sheet`, `at` (1-based: the rows go before it), `count?` (1) |
+| `delete_rows` | `sheet`, `at`, `count?` |
+| `insert_columns` | `sheet`, `at` (`C`), `count?` |
+| `delete_columns` | `sheet`, `at`, `count?` |
+| `format_cells` | `sheet`, `range`, `format` `{bold?, italic?, underline?, size?, color?, font?, fill? (null: none), number_format? ("#,##0", "0.0%", "yyyy/mm/dd"…), align? (left, center, right), wrap?}` |
+| `merge` | `sheet`, `range` (the cells but the top-left one are emptied) |
+| `unmerge` | `sheet`, `range` (the merged ranges within it) |
+| `set_column_width` | `sheet`, `columns` (`A:C`), `width` (characters, 0 to 255; 0 hides) |
+| `set_row_height` | `sheet`, `rows` (`1:3`), `height` (points, 0 to 409; 0 hides) |
+| `replace_text` | `find`, `replace`, `sheet?` (the text cells of every shown sheet; not formulas; says how many it `replaced`) |
+
+`add_sheet` answers the new sheet's id in `created` (`{"sheet": 3}`).
+
+A cell the person is typing in is entered before an `apply`; `inspect` and `save` give the workbook without it until it is
+entered.
+
 ## With no window
 
 ```sh
-ibis-agent new deck.pptx                      # an empty presentation (`.docx`: a document of one empty paragraph)
+ibis-agent new deck.pptx                      # an empty file of the kind the name says: a presentation of one title slide,
+                                              # a document of one empty paragraph (.docx), a workbook of one empty sheet (.xlsx)
 ibis-agent inspect deck.pptx                  # the file, as `inspect` gives it
 ibis-agent apply deck.pptx ops.json -o out.pptx   # `-` reads the operations from standard input
 ```
 
 `apply` prints `{ "replaced": n, "document": … }` of the file written, or `{ "error": … }` and exits with 1, writing nothing.
-
-`scripts/build-agent-wasm.sh` builds the same for a JavaScript runtime (wasm-bindgen's `nodejs` target, in
-`target/agent-wasm/`): `new_presentation()`, `inspect(bytes, name)` and `apply(bytes, name, ops)` (the file written and how
-many places were `replaced`; a refusal throws the error as JSON).
