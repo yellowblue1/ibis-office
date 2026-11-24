@@ -65,6 +65,7 @@ pub(crate) mod import_text;
 pub(crate) mod text_columns;
 pub(crate) mod goto_special;
 pub(crate) mod split_view;
+mod agent_place;
 pub(crate) mod cell_styles;
 pub(crate) mod flash_fill;
 pub(crate) mod notes;
@@ -517,6 +518,12 @@ fn outer_contexts(state: &crate::shell::menu_context::ContextState) -> Vec<crate
 impl FormatEditor for Workbook {
     fn note_open_failed(path: &std::path::Path) {
         repair::note_open_failed(path);
+    }
+    fn agent_place(editor: &SlideEditor) -> Option<crate::shell::agent::Place> {
+        agent_place::place(editor)
+    }
+    fn agent_show(editor: &mut SlideEditor, top: Option<crate::shell::agent::Top>, at: Option<crate::shell::agent::At>, window: &mut Window, cx: &mut Context<SlideEditor>) -> Result<(), String> {
+        agent_place::show(editor, top, at, window, cx)
     }
     fn note_opened(path: &std::path::Path) {
         repair::note_opened(path);

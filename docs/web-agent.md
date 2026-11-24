@@ -20,6 +20,7 @@ The editor answers only its parent window, at the origin given explicitly with `
 | `{ source: 'ibisoffice-agent', id, method: 'apply', params: [operations] }` | `result`: `{ created, document }` as JSON text |
 | `{ source: 'ibisoffice-agent', id, method: 'state' }` | `result`: `{ dirty, revision }` as JSON text; `revision` changes with every edit, undo and redo (cheap: for saving once the person stops) |
 | `{ source: 'ibisoffice-agent', id, method: 'save' }` | `result`: the file's bytes (an `ArrayBuffer`, transferred); the document is then saved (not dirty). What the person is typing is saved as typed and their typing goes on |
+| `{ source: 'ibisoffice-agent', id, method: 'show', params: { top?, at? } }` | `result`: `null`; the place is shown (see [Two editors side by side](#two-editors-side-by-side)) |
 
 A refused request is answered `{ ok: false, error }`, and nothing changed. An `apply` of an empty list is done, changing
 nothing. Once the document is open the editor posts
@@ -178,6 +179,43 @@ The agent's edits are one step of 元に戻す (Ctrl+Z), and F4 (繰り返し) r
 
 A cell the person is typing in is entered before an `apply`; `inspect` and `save` give the workbook without it until it is
 entered.
+
+## Two editors side by side
+
+A page can show two files of the same structure side by side, each in an editor of its own (an iframe each), and keep
+them at the same place: a translation (editable) beside its original (opened with `view=1`, read-only), made from a copy of
+the original by replacing its text. The editor tells where the person is; the page asks the other editor to show the same
+place. A place is by index, not by id, so it is the same in both files: the Nth block of a document's body (a paragraph
+or a table, as `inspect`'s `blocks` are listed), the Nth slide and its Nth shape (as `inspect` lists them), the Nth sheet
+of a workbook (hidden ones counted: `number` − 1) and a cell.
+
+As the person scrolls, moves the caret or selects, the editor posts `{ source: 'ibisoffice-agent', type: 'place', place:
+{ top, at } }`: at most once a frame, and only when the place changed.
+
+| Kind | `top`: what is at the view's top edge | `at`: where the caret or the selection is, or `null` |
+| --- | --- | --- |
+| A document | `{ block, offset }`: the block at the edge, and how far down into it the edge is, 0 to below 1 (by the block's height, from its first line's top to its last line's bottom, a page break within it counted). An edge in a gap (between blocks, in a page's margin, between pages) is at the block below it, `offset` 0 | `{ block }`: the block the caret is in, or where the selection starts; a caret in a table's cell is in the table. `null` in a header, a footer, a note or a text box |
+| A presentation | `{ slide }`: the slide shown | `{ slide, shape }`: the slide shown and its shape selected (or whose text is being edited), `shape` `null` when none is |
+| A workbook | `{ sheet, row, column }`: the sheet shown and the top-left cell of the part that scrolls: the frozen rows and columns (ウィンドウ枠の固定) are not counted, so a sheet frozen at B3 not scrolled says `row` 3, `column` 2. Rows and columns are 1-based | `{ sheet, row, column }`: the active cell (of a merged range, its top-left cell) |
+
+The page shows a place with `{ source: 'ibisoffice-agent', id, method: 'show', params: { top?, at? } }`, answered
+`{ ok: true, result: null }`. A read-only editor (`view=1`) shows places as an editable one does; the person can still
+select and scroll there, and nothing is edited.
+
+- `top` scrolls the view so that place is at its top edge: a document's block, `offset` of its height down; a
+  presentation's slide; a workbook's sheet, scrolled so the cell is the top-left one of the part that scrolls.
+- `at` selects the place so it is seen: a document's whole block (its text, a table's from its first cell to its last); a
+  presentation's shape, on its slide (`shape` `null` selects none); a workbook's cell made the active one. With `top` it is
+  not scrolled to; a shape of another slide than `top`'s is not selected, and the cell of another sheet becomes the
+  active cell that sheet shows when its tab is clicked. Without `top`, the slide or the sheet is shown and the block or
+  the cell is brought into view.
+- A place past the end is taken as the last there is: the last block, slide or sheet, a row or column past the sheet's
+  last (1048576, 16384) the last, a shape past the slide's none. A place of another kind of file is refused (`{ ok:
+  false, error }`), as is a sheet that is hidden or a chart sheet, which no editor shows.
+- What the person was typing (a cell, a shape's text) is entered first.
+- The place a `show` puts the editor at is not posted back, so two editors that follow each other do not answer each
+  other's moves: the next `place` posted is the person's own next move.
+- A document whose pages move side by side (表示 > ページの移動 > 左右) posts no place and refuses `top` and `at`.
 
 ## With no window
 

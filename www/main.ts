@@ -2,7 +2,7 @@
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 // Boots the wasm editor. `pkg/` is produced by scripts/build-web.sh.
-import init, { agent_apply, agent_inspect, agent_save, agent_state, run, set_embed_options, set_embedded } from './pkg/ibis_office_app.js';
+import init, { agent_apply, agent_inspect, agent_place, agent_save, agent_show, agent_state, run, set_embed_options, set_embedded } from './pkg/ibis_office_app.js';
 
 /** A file chosen by the user or loaded at startup. */
 interface PickedFile {
@@ -487,8 +487,8 @@ window.ibisOfficeEmbedAction = embedAction;
 interface AgentRequest {
   source: 'ibisoffice-agent';
   id: string | number;
-  method: 'inspect' | 'apply' | 'save' | 'state';
-  /** For `apply`: the operations (an array, or its JSON). */
+  method: 'inspect' | 'apply' | 'save' | 'state' | 'show';
+  /** For `apply`: the operations (an array, or its JSON); for `show`: the place, `{ top?, at? }` (or its JSON). */
   params?: unknown;
 }
 
@@ -502,7 +502,9 @@ function isAgentRequest(data: unknown): data is AgentRequest {
  * (`?origin=` or `ibisOfficeOptions.targetOrigin`; not the referrer's, and not `'*'`), sends
  * `{ source: 'ibisoffice-agent', id, method, params }` and is answered `{ source: 'ibisoffice-agent', id, ok, result | error }`:
  * `inspect` (the document with ids, JSON), `apply` (`params`: the operations; `{created, document}`, JSON), `state`
- * (`{dirty, revision}`, JSON) and `save` (the file's bytes, transferred). Told `{ source: 'ibisoffice-agent', type: 'ready' }` once the document is open.
+ * (`{dirty, revision}`, JSON), `save` (the file's bytes, transferred) and `show` (`params`: a place; `null`). Told
+ * `{ source: 'ibisoffice-agent', type: 'ready' }` once the document is open, then `{ type: 'place', place }` as the person
+ * moves (`tellPlace`).
  */
 function listenToAgent(): void {
   const origin = embedOptions().targetOrigin;
@@ -532,6 +534,10 @@ function listenToAgent(): void {
           reply({ ok: true, result: bytes }, [bytes]);
           return;
         }
+        case 'show':
+          agent_show(typeof params === 'string' ? params : JSON.stringify(params ?? {}));
+          reply({ ok: true, result: null });
+          return;
         default:
           reply({ ok: false, error: `unknown method ${String(method)}` });
       }
@@ -540,6 +546,27 @@ function listenToAgent(): void {
     }
   });
   window.parent.postMessage({ source: 'ibisoffice-agent', type: 'ready' }, origin);
+  tellPlace(origin);
+}
+
+/**
+ * Where the person is (scrolled to, and their caret or selection), told to the parent window as it changes, at most once a
+ * frame: `{ source: 'ibisoffice-agent', type: 'place', place: { top, at } }`, for a page that keeps two editors side by
+ * side at the same place. A place the parent had shown (`show`) is not told back.
+ */
+function tellPlace(origin: string): void {
+  const frame = () => {
+    try {
+      const place = agent_place();
+      if (place !== undefined) {
+        window.parent.postMessage({ source: 'ibisoffice-agent', type: 'place', place: JSON.parse(place) }, origin);
+      }
+    } catch {
+      // No document open (the start view): nothing to tell.
+    }
+    requestAnimationFrame(frame);
+  };
+  requestAnimationFrame(frame);
 }
 
 // Drawn with WebGPU, or WebGL2 where the browser has no WebGPU (forks/gpui-pre-web chooses).

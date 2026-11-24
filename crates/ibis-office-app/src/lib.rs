@@ -793,6 +793,19 @@ mod web {
     pub fn agent_state() -> Result<String, JsValue> {
         with_editor(|editor, _, _| editor.agent_state())
     }
+
+    /// The place the person is at (`shell::agent::Place`, JSON) when it changed since it was last asked for or shown;
+    /// else nothing.
+    #[wasm_bindgen]
+    pub fn agent_place() -> Result<Option<String>, JsValue> {
+        with_editor(|editor, _, _| Ok(editor.agent_place_changed()))
+    }
+
+    /// Show a place (`{top?, at?}`, JSON), also in a read-only editor.
+    #[wasm_bindgen]
+    pub fn agent_show(params: &str) -> Result<(), JsValue> {
+        with_editor(|editor, window, cx| editor.agent_show(params, window, cx))
+    }
 }
 
 #[cfg(all(test, not(target_family = "wasm")))]

@@ -104,6 +104,8 @@ pub(crate) mod scenario_fix;
 mod scenario_open_save;
 #[path = "tests/shell/scenario_menu_search.rs"]
 mod scenario_menu_search;
+#[path = "tests/shell/side_by_side_place.rs"]
+mod side_by_side_place;
 
 /// Every scenario, as (name, function).
 pub(crate) fn all() -> Vec<(&'static str, fn())> {
@@ -152,6 +154,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
     all.extend(scenario_open_save::all());
     all.extend(crate::shell::scenario_menus::all());
     all.extend(scenario_menu_search::all());
+    all.extend(side_by_side_place::all());
     all.extend(menu_layout_scenarios::all());
     all.extend(menus_20261109_scenarios::all());
     all.extend(menus_20261112_scenarios::all());

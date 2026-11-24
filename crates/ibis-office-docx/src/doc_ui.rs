@@ -71,7 +71,7 @@ pub(crate) fn flow_content(view: Size<Pixels>, pages: &[EmuSize], scale: Option<
 
 /// Where page `index` is in the content (pixels): its left and top, the
 /// pages being of `pages`' sizes.
-fn page_place(content: &WorkspaceContent, pages: &[EmuSize], index: usize, side_to_side: bool) -> (f32, f32) {
+pub(crate) fn page_place(content: &WorkspaceContent, pages: &[EmuSize], index: usize, side_to_side: bool) -> (f32, f32) {
     if side_to_side {
         let gap = f32::from(content.slide_origin.x);
         let tallest = pages.iter().map(|p| p.height).max().unwrap_or(1);
@@ -169,7 +169,7 @@ impl SlideEditor {
     }
 
     /// Scroll the pages so `top` (in the content) is at the top of the workspace.
-    fn scroll_flow_to(&self, top: f32) {
+    pub(crate) fn scroll_flow_to(&self, top: f32) {
         let (Some(content), Some(ws)) = (self.workspace_content(), self.workspace_bounds) else { return };
         let view_h = if self.doc_split().is_some() {
             f32::from(ws.size.height) / 2.0

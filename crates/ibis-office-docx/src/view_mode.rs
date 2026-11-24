@@ -127,7 +127,9 @@ impl SlideEditor {
 
     /// Word: 閲覧・レビュー・編集モードを設定する (DOCX-VIEW-021).
     pub(crate) fn set_interaction_mode(&mut self, mode: ibis_doc_model::DocumentInteractionMode, window: &mut Window, cx: &mut Context<Self>) {
-        if self.interaction_mode() == mode {
+        // A window opened read-only (`?view=1`, --read-only) stays in viewing: the mode written to the file would change
+        // nothing shown and leave the document with a change to save.
+        if self.interaction_mode() == mode || self.is_read_only() {
             return;
         }
         if mode == ibis_doc_model::DocumentInteractionMode::Editing && self.is_track_changes_locked() {

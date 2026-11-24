@@ -696,6 +696,18 @@ pub trait FormatEditor {
     /// in it that the change may have moved is let go (a document's extra selections).
     fn edited_from_outside(_editor: &mut SlideEditor) {}
 
+    /// Where the view is scrolled to and where the person's caret or selection is, by index (`agent::Place`); `None`
+    /// before the format has laid out what it shows.
+    fn agent_place(_editor: &SlideEditor) -> Option<crate::agent::Place> {
+        None
+    }
+
+    /// Show `top` at the view's top edge and select `at` (`agent::Place`), clamped to what the document has; a place of
+    /// another kind of file is refused. `at` alone is brought into view; with `top` it is not scrolled to.
+    fn agent_show(_editor: &mut SlideEditor, _top: Option<crate::agent::Top>, _at: Option<crate::agent::At>, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> Result<(), String> {
+        Err("this kind of file has no places to show".into())
+    }
+
     /// A modifier key went down or up, when a drag of the format's follows it (a workbook's cell move and fill copy while ⌥ is held).
     fn modifiers_changed(_editor: &mut SlideEditor, _event: &ModifiersChangedEvent, _cx: &mut Context<SlideEditor>) {}
 
@@ -1361,6 +1373,8 @@ pub trait FormatDriver: Sync {
     fn history_applied_early(&self, _editor: &mut SlideEditor, _window: &mut Window, _cx: &mut Context<SlideEditor>);
     fn history_applied(&self, _editor: &mut SlideEditor, _cx: &mut Context<SlideEditor>);
     fn edited_from_outside(&self, _editor: &mut SlideEditor);
+    fn agent_place(&self, _editor: &SlideEditor) -> Option<crate::agent::Place>;
+    fn agent_show(&self, _editor: &mut SlideEditor, _top: Option<crate::agent::Top>, _at: Option<crate::agent::At>, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> Result<(), String>;
     fn modifiers_changed(&self, _editor: &mut SlideEditor, _event: &ModifiersChangedEvent, _cx: &mut Context<SlideEditor>);
     fn workspace_wheel(&self, _editor: &mut SlideEditor, _event: &ScrollWheelEvent, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> bool;
     fn shape_press_early(&self, _editor: &mut SlideEditor, _event: &MouseDownEvent, _cx: &mut Context<SlideEditor>) -> bool;
@@ -1776,6 +1790,12 @@ impl<F: FormatEditor> FormatDriver for Driver<F> {
     }
     fn edited_from_outside(&self, _editor: &mut SlideEditor) {
         F::edited_from_outside(_editor)
+    }
+    fn agent_place(&self, _editor: &SlideEditor) -> Option<crate::agent::Place> {
+        F::agent_place(_editor)
+    }
+    fn agent_show(&self, _editor: &mut SlideEditor, _top: Option<crate::agent::Top>, _at: Option<crate::agent::At>, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> Result<(), String> {
+        F::agent_show(_editor, _top, _at, _window, _cx)
     }
     fn modifiers_changed(&self, _editor: &mut SlideEditor, _event: &ModifiersChangedEvent, _cx: &mut Context<SlideEditor>) {
         F::modifiers_changed(_editor, _event, _cx)

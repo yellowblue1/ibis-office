@@ -80,6 +80,41 @@ impl SlideEditor {
         Ok((self.file_name.as_deref().unwrap_or_default().to_string(), bytes))
     }
 
+    /// Where the person is (`Place`), in JSON, when it is not the place last told or shown: the embedding page shows it in
+    /// the other editor of two side by side. A place this editor was asked to show is not told back, so two editors that
+    /// follow each other do not answer each other's moves.
+    pub fn agent_place_changed(&mut self) -> Option<String> {
+        let place = serde_json::to_string(&self.agent_place()?).expect("serialisable");
+        if self.agent_told_place.as_deref() == Some(place.as_str()) {
+            return None;
+        }
+        self.agent_told_place = Some(place.clone());
+        Some(place)
+    }
+
+    /// Show `params` (`Show`, JSON): its `top` at the view's top edge, its `at` selected, also in a read-only editor.
+    pub fn agent_show(&mut self, params: &str, window: &mut Window, cx: &mut Context<Self>) -> Result<(), String> {
+        if !self.has_document {
+            return Err("no file is open".into());
+        }
+        let show: Show = serde_json::from_str(params).map_err(|e| format!("the place to show: {e}"))?;
+        if show.top.is_none() && show.at.is_none() {
+            return Ok(());
+        }
+        with_format!(self, agent_show(self, show.top, show.at, window, cx))?;
+        cx.notify();
+        self.agent_told_place = self.agent_place().map(|p| serde_json::to_string(&p).expect("serialisable"));
+        Ok(())
+    }
+
+    /// Where the person is: what is at the view's top edge, and their caret or selection (`Place`).
+    pub fn agent_place(&self) -> Option<Place> {
+        if !self.has_document {
+            return None;
+        }
+        with_format!(self, agent_place(self))
+    }
+
     fn agent_summary(&self, source: &ibis_pptx::Source) -> ibis_agent::Summary {
         ibis_agent::inspect(source.kind(), self.presentation(), self.file_name.as_deref().unwrap_or_default(), self.document.is_dirty())
     }
@@ -92,6 +127,62 @@ impl SlideEditor {
             _ => Err("no file is open".into()),
         }
     }
+}
+
+/// A place in the open file by index, the same in two files of the same structure (a translation made from a copy of the
+/// original): the Nth block of a document's body, the Nth slide and its Nth shape as `inspect` lists them, the Nth sheet
+/// of a workbook (hidden ones counted) and a cell. docs/web-agent.md, "Two editors side by side".
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Place {
+    pub top: Top,
+    pub at: Option<At>,
+}
+
+/// What is at the view's top edge.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum Top {
+    /// `offset`: how far down into the block (by its laid-out height) the edge is, 0 to below 1.
+    Block {
+        block: usize,
+        #[serde(default)]
+        offset: f64,
+    },
+    Slide { slide: usize },
+    /// The top-left cell of the part that scrolls, 1-based.
+    Cell { sheet: usize, row: u32, column: u32 },
+}
+
+/// Where the person's caret or selection is.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum At {
+    Block { block: usize },
+    /// `shape`: the selected shape, `None` when none is.
+    Shape { slide: usize, shape: Option<usize> },
+    /// The active cell, 1-based.
+    Cell { sheet: usize, row: u32, column: u32 },
+}
+
+impl Top {
+    /// Rounded as it is told, so that a place read back after it was shown is the one told.
+    pub fn block(block: usize, offset: f64) -> Self {
+        Top::Block { block, offset: ((offset * 1000.0).floor() / 1000.0).clamp(0.0, 0.999) }
+    }
+}
+
+/// A `show` request's `params`.
+#[derive(serde::Deserialize)]
+struct Show {
+    #[serde(default)]
+    top: Option<Top>,
+    #[serde(default)]
+    at: Option<At>,
+}
+
+/// A place given to a file of another kind.
+pub fn wrong_kind(what: &str) -> String {
+    format!("the place is not one of a {what}")
 }
 
 /// The editor of the page and its window (the browser version has one editor in a page).

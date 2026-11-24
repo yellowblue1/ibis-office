@@ -535,6 +535,8 @@ pub struct SlideEditor {
     pub(crate) is_syncing_scroll: std::cell::Cell<bool>,
     /// Last scroll offset synced with peer window.
     pub(crate) last_synced_scroll: std::cell::Cell<Point<Pixels>>,
+    /// The place last told to the embedding page, or put by its `show` (`agent::Place`, in JSON): only a change is told.
+    pub(crate) agent_told_place: Option<String>,
     /// Whether this document was opened from an AutoRecover snapshot (XLSX-FILE-015).
     pub is_recovered: bool,
     /// Path of the autorecover backup file associated with this open document (if any).
@@ -837,6 +839,7 @@ impl SlideEditor {
             side_by_side_peer: None,
             is_syncing_scroll: std::cell::Cell::new(false),
             last_synced_scroll: std::cell::Cell::new(Point::default()),
+            agent_told_place: None,
             is_recovered: false,
             autorecover_settings: None,
             recover_unsaved: None,

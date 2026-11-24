@@ -58,6 +58,7 @@ pub(crate) mod sidebars;
 /// The extension traits of this folder's `impl SlideEditor` blocks, written by `scripts/gen-editor-ext.py`.
 pub mod ext;
 pub(crate) mod edit_points;
+pub(crate) mod agent_place;
 pub mod outline_edit;
 pub mod ink;
 pub(crate) mod autocorrect_panel;
@@ -528,6 +529,14 @@ impl FormatEditor for Presentation {
         if let Some(s) = editor.pptx_mut() {
             s.slide_selection.clear();
         }
+    }
+
+    fn agent_place(editor: &SlideEditor) -> Option<crate::shell::agent::Place> {
+        agent_place::place(editor)
+    }
+
+    fn agent_show(editor: &mut SlideEditor, top: Option<crate::shell::agent::Top>, at: Option<crate::shell::agent::At>, window: &mut Window, cx: &mut Context<SlideEditor>) -> Result<(), String> {
+        agent_place::show(editor, top, at, window, cx)
     }
 
     // (The slide's text takes the keys and the typing from the outline's line.)

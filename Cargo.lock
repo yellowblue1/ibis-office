@@ -3492,6 +3492,7 @@ dependencies = [
  "moxcms",
  "notify",
  "objc",
+ "serde",
  "serde_json",
  "ttf-parser",
  "usvg 0.46.0",
