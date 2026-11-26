@@ -16,14 +16,19 @@ impl TryFrom<Vec<String>> for Text {
     type Error = String;
 
     fn try_from(paragraphs: Vec<String>) -> Result<Self, String> {
-        if let Some(i) = paragraphs.iter().position(|p| has_line_break(p)) {
-            return Err(format!("paragraph {i} has a line break: give each paragraph as its own string"));
-        }
         for (i, p) in paragraphs.iter().enumerate() {
-            holdable(p).map_err(|e| format!("paragraph {i}: {e}"))?;
+            check_paragraph(i, p)?;
         }
         Ok(Text(paragraphs.join("\n")))
     }
+}
+
+/// Refuse what paragraph `i`'s text cannot be: a line break in it, or a character a file cannot hold.
+pub(crate) fn check_paragraph(i: usize, text: &str) -> Result<(), String> {
+    if has_line_break(text) {
+        return Err(format!("paragraph {i} has a line break: give each paragraph as its own string"));
+    }
+    holdable(text).map_err(|e| format!("paragraph {i}: {e}"))
 }
 
 /// Refuse a control character other than a tab (and the line breaks, refused on their own): a file holds none, so it

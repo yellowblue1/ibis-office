@@ -8,7 +8,7 @@ use ibis_doc_model::geometry::EmuRect;
 use ibis_doc_model::model::{Shape, ShapeId, ShapeKind};
 use ibis_doc_model::text::{Run, RunStyle, TextBody, TextField, TextStyle};
 
-use super::{FieldName, FieldPiece, ParagraphText, Piece};
+use super::text::{FieldName, FieldPiece, ParagraphText, Piece};
 use crate::{Applied, OpError, Ops, Session};
 
 fn blank() -> Session {
@@ -112,11 +112,59 @@ fn a_field_is_kept_and_never_made() {
     assert!(runs(&session, page).iter().all(|r| r.style.field.is_none()));
 
     let err = apply(&mut session, &format!(r#"{{"op": "set_text", "slide": {slide}, "shape": {page}, "text": [["Page ", {{"field": "slide_number"}}]]}}"#)).unwrap_err();
-    assert!(err.message.contains("no slide_number field to keep"), "{err}");
+    assert!(err.message.contains("no more slide_number fields to keep (it had 0)"), "{err}");
     let err = apply(&mut session, &format!(r#"{{"op": "set_notes", "slide": {slide}, "text": [["p. ", {{"field": "slide_number"}}]]}}"#)).unwrap_err();
     assert!(err.message.contains("has no field to keep"), "{err}");
     let err = parse_ops(&format!(r#"{{"op": "set_text", "slide": {slide}, "shape": {page}, "text": [[{{"field": "page"}}]]}}"#)).unwrap_err();
-    assert!(err.contains("operation 0"), "{err}");
+    assert!(err.contains(r#"paragraph 0: a field is {"field": one of ["slide_number", "date"]}"#), "{err}");
+}
+
+/// A field is given once: a second copy of the one the text had is refused, not made from it.
+#[test]
+fn a_field_is_not_given_twice() {
+    let (mut session, slide, page, _) = with_fields();
+    let err = apply(
+        &mut session,
+        &format!(r#"{{"op": "set_text", "slide": {slide}, "shape": {page}, "text": [["Page ", {{"field": "slide_number"}}, " / ", {{"field": "slide_number"}}]]}}"#),
+    )
+    .unwrap_err();
+    assert!(err.message.contains("no more slide_number fields to keep (it had 1)"), "{err}");
+}
+
+/// A field goes back to the paragraph it was in first: dropping one paragraph's field does not hand the next
+/// paragraph's field to another.
+#[test]
+fn each_paragraph_keeps_its_own_field() {
+    let (mut session, slide, page, _) = with_fields();
+    let body = |s: &Session| s.model().slides[1].shape(ShapeId(page)).unwrap().text_body().unwrap().clone();
+    let mut two = body(&session);
+    let mut second = two.paragraphs[0].clone();
+    for run in second.runs.iter_mut().filter(|r| r.style.field.is_some()) {
+        run.style.italic = Some(true);
+    }
+    two.paragraphs.push(second);
+    let slide_id = session.model().slides[1].id;
+    session.document.execute(vec![Command::SetTextBody { slide: slide_id, shape: ShapeId(page), body: two }]).unwrap();
+    apply(
+        &mut session,
+        &format!(r#"{{"op": "set_text", "slide": {slide}, "shape": {page}, "text": ["one", ["two ", {{"field": "slide_number"}}]]}}"#),
+    )
+    .unwrap();
+    let after = body(&session);
+    let (field, words) = split(&after.paragraphs[1].runs);
+    assert_eq!(words, "two ");
+    assert_eq!(field[0].style.italic, Some(true));
+}
+
+/// No paragraph at all is one empty paragraph, as a text always has one.
+#[test]
+fn an_empty_text_is_one_empty_paragraph() {
+    let (mut session, slide, page, _) = with_fields();
+    apply(&mut session, &format!(r#"{{"op": "set_text", "slide": {slide}, "shape": {page}, "text": []}}"#)).unwrap();
+    let body = session.model().slides[1].shape(ShapeId(page)).unwrap().text_body().unwrap();
+    assert_eq!(body.paragraphs.len(), 1);
+    assert!(body.paragraphs[0].runs.is_empty());
+    session.save().unwrap();
 }
 
 /// Replace text changes the words around a field and never the number or date it shows.

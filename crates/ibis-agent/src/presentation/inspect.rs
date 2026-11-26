@@ -10,7 +10,7 @@ use ibis_doc_model::geometry::EMU_PER_POINT;
 use ibis_doc_model::model::{Presentation, Shape, ShapeKind, Slide};
 use serde::Serialize;
 
-use super::text::{ParagraphText, read_body as paragraphs};
+use super::text::{ParagraphText, read_paragraphs};
 
 #[derive(Debug, Serialize)]
 pub struct Inspection {
@@ -110,7 +110,7 @@ fn shape_info(slide: &Slide, shape: &Shape) -> ShapeInfo {
     };
     let body = shape.text_body();
     let cells = match &shape.kind {
-        ShapeKind::Table(table) => Some(table.rows.iter().map(|row| row.cells.iter().map(|c| paragraphs(&c.text)).collect()).collect()),
+        ShapeKind::Table(table) => Some(table.rows.iter().map(|row| row.cells.iter().map(|c| read_paragraphs(&c.text)).collect()).collect()),
         _ => None,
     };
     ShapeInfo {
@@ -124,7 +124,7 @@ fn shape_info(slide: &Slide, shape: &Shape) -> ShapeInfo {
         w: pt(shape.frame.width),
         h: pt(shape.frame.height),
         fill,
-        text: body.map(paragraphs),
+        text: body.map(read_paragraphs),
         font_size: body.and_then(|b| {
             let first = b.paragraphs.first()?;
             let size = first.runs.first().map_or(first.end_style.font_size, |r| r.style.font_size).unwrap_or(b.style.font_size);
