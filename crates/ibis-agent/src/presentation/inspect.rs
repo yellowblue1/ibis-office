@@ -10,7 +10,7 @@ use ibis_doc_model::geometry::EMU_PER_POINT;
 use ibis_doc_model::model::{Presentation, Shape, ShapeKind, Slide};
 use serde::Serialize;
 
-use super::text::{ParagraphText, read_paragraphs};
+use super::text::read_paragraphs;
 
 #[derive(Debug, Serialize)]
 pub struct Inspection {
@@ -67,13 +67,13 @@ pub struct ShapeInfo {
     pub fill: Option<String>,
     /// Its paragraphs, in the shape [`Op`](crate::presentation::Op)s take text in.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub text: Option<Vec<ParagraphText>>,
+    pub text: Option<Vec<String>>,
     /// The size of the text's first character, in points.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub font_size: Option<f64>,
     /// A table's cells' paragraphs, by row.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cells: Option<Vec<Vec<Vec<ParagraphText>>>>,
+    pub cells: Option<Vec<Vec<Vec<String>>>>,
 }
 
 pub fn inspect(presentation: &Presentation, name: &str, dirty: bool) -> Inspection {

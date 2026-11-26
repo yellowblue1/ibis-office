@@ -8,7 +8,6 @@ use ibis_doc_model::geometry::EmuRect;
 use ibis_doc_model::model::{Shape, ShapeId, ShapeKind};
 use ibis_doc_model::text::{Run, RunStyle, TextBody, TextField, TextStyle};
 
-use super::text::{FieldName, FieldPiece, ParagraphText, Piece};
 use crate::{Applied, OpError, Ops, Session};
 
 fn blank() -> Session {
@@ -46,11 +45,7 @@ fn with_fields() -> (Session, u64, u64, u64) {
     (session, slide.id, page, made)
 }
 
-fn field(field: FieldName) -> Piece {
-    Piece::Field(FieldPiece { field })
-}
-
-fn text_of(session: &Session, slide: u64, shape: u64) -> Vec<ParagraphText> {
+fn text_of(session: &Session, slide: u64, shape: u64) -> Vec<String> {
     let doc = session.inspect().into_presentation();
     doc.slides.iter().find(|s| s.id == slide).unwrap().shapes.iter().find(|s| s.id == shape).unwrap().text.clone().unwrap()
 }
@@ -65,30 +60,26 @@ fn split(runs: &[Run]) -> (Vec<Run>, String) {
     (field, words.iter().map(|r| r.text.as_str()).collect())
 }
 
-/// A field reads as itself among the paragraph's words, and given back with other words it stays the field it was: the
-/// number follows the slide, and keeps its own format.
+fn set_text(session: &mut Session, slide: u64, shape: u64, text: &str) -> Result<Applied, OpError> {
+    apply(session, &format!(r#"{{"op": "set_text", "slide": {slide}, "shape": {shape}, "text": {text}}}"#))
+}
+
+/// A field reads as its mark among the paragraph's words, and given back with other words it stays the field it was:
+/// the number follows the slide, and keeps its own format.
 #[test]
-fn a_field_is_read_as_itself_and_kept_when_the_words_change() {
+fn a_field_is_read_as_its_mark_and_kept_when_the_words_change() {
     let (mut session, slide, page, made) = with_fields();
-    assert_eq!(text_of(&session, slide, page), vec![ParagraphText::Pieces(vec![Piece::Text("ページ ".into()), field(FieldName::SlideNumber)])]);
-    let json = serde_json::to_string(&text_of(&session, slide, made)).unwrap();
-    assert_eq!(json, r#"[["作成日 ",{"field":"date"}]]"#);
+    assert_eq!(text_of(&session, slide, page), ["ページ {{slide_number}}"]);
+    assert_eq!(text_of(&session, slide, made), ["作成日 {{date}}"]);
 
     let (number, _) = split(&runs(&session, page));
     let (date, _) = split(&runs(&session, made));
     let before = session.model().slides.clone();
-    let given_back = serde_json::to_string(&text_of(&session, slide, page)).unwrap();
-    apply(&mut session, &format!(r#"{{"op": "set_text", "slide": {slide}, "shape": {page}, "text": {given_back}}}"#)).unwrap();
+    set_text(&mut session, slide, page, r#"["ページ {{slide_number}}"]"#).unwrap();
     assert_eq!(session.model().slides, before);
 
-    apply(
-        &mut session,
-        &format!(
-            r#"[{{"op": "set_text", "slide": {slide}, "shape": {page}, "text": [["Page ", {{"field": "slide_number"}}, " of the deck"]]}},
-                {{"op": "set_text", "slide": {slide}, "shape": {made}, "text": [["Made ", {{"field": "date"}}]]}}]"#
-        ),
-    )
-    .unwrap();
+    set_text(&mut session, slide, page, r#"["Page {{slide_number}} of the deck"]"#).unwrap();
+    set_text(&mut session, slide, made, r#"["Made {{date}}"]"#).unwrap();
     let page_runs = runs(&session, page);
     assert_eq!(page_runs.iter().map(|r| r.text.as_str()).collect::<String>(), "Page 2 of the deck");
     assert_eq!(page_runs[1..1 + number.len()], number[..]);
@@ -103,32 +94,28 @@ fn a_field_is_read_as_itself_and_kept_when_the_words_change() {
     assert_eq!(split(&body.paragraphs[0].runs).0.iter().map(|r| r.text.as_str()).collect::<String>(), "1");
 }
 
-/// Plain words over a paragraph that had a field leave the field out, as asked; a field the text never had is refused,
-/// as is one in text that keeps none (notes, a shape being made).
+/// Words with no mark over a paragraph that had a field leave the field out, as asked; a mark the text has no field
+/// for is refused, as is one in text that keeps none (notes, a shape being made).
 #[test]
 fn a_field_is_kept_and_never_made() {
     let (mut session, slide, page, _) = with_fields();
-    apply(&mut session, &format!(r#"{{"op": "set_text", "slide": {slide}, "shape": {page}, "text": ["Page two"]}}"#)).unwrap();
+    set_text(&mut session, slide, page, r#"["Page two"]"#).unwrap();
     assert!(runs(&session, page).iter().all(|r| r.style.field.is_none()));
 
-    let err = apply(&mut session, &format!(r#"{{"op": "set_text", "slide": {slide}, "shape": {page}, "text": [["Page ", {{"field": "slide_number"}}]]}}"#)).unwrap_err();
-    assert!(err.message.contains("no more slide_number fields to keep (it had 0)"), "{err}");
-    let err = apply(&mut session, &format!(r#"{{"op": "set_notes", "slide": {slide}, "text": [["p. ", {{"field": "slide_number"}}]]}}"#)).unwrap_err();
-    assert!(err.message.contains("has no field to keep"), "{err}");
-    let err = parse_ops(&format!(r#"{{"op": "set_text", "slide": {slide}, "shape": {page}, "text": [[{{"field": "page"}}]]}}"#)).unwrap_err();
-    assert!(err.contains(r#"paragraph 0: a field is {"field": one of ["slide_number", "date"]}"#), "{err}");
+    let err = set_text(&mut session, slide, page, r#"["Page {{slide_number}}"]"#).unwrap_err();
+    assert!(err.message.contains("no more {{slide_number}} fields to keep (it had 0)"), "{err}");
+    let err = apply(&mut session, &format!(r#"{{"op": "set_notes", "slide": {slide}, "text": ["p. {{{{slide_number}}}}"]}}"#)).unwrap_err();
+    assert!(err.message.contains("has no field to keep ({{slide_number}})"), "{err}");
+    let err = apply(&mut session, &format!(r#"{{"op": "add_text_box", "slide": {slide}, "frame": {{"x": 0, "y": 0, "w": 100, "h": 20}}, "text": ["{{{{date}}}}"]}}"#)).unwrap_err();
+    assert!(err.message.contains("has no field to keep ({{date}})"), "{err}");
 }
 
-/// A field is given once: a second copy of the one the text had is refused, not made from it.
+/// A field is given once: a second mark of the one the text had is refused, not made from it.
 #[test]
 fn a_field_is_not_given_twice() {
     let (mut session, slide, page, _) = with_fields();
-    let err = apply(
-        &mut session,
-        &format!(r#"{{"op": "set_text", "slide": {slide}, "shape": {page}, "text": [["Page ", {{"field": "slide_number"}}, " / ", {{"field": "slide_number"}}]]}}"#),
-    )
-    .unwrap_err();
-    assert!(err.message.contains("no more slide_number fields to keep (it had 1)"), "{err}");
+    let err = set_text(&mut session, slide, page, r#"["Page {{slide_number}} / {{slide_number}}"]"#).unwrap_err();
+    assert!(err.message.contains("no more {{slide_number}} fields to keep (it had 1)"), "{err}");
 }
 
 /// A field goes back to the paragraph it was in first: dropping one paragraph's field does not hand the next
@@ -145,13 +132,8 @@ fn each_paragraph_keeps_its_own_field() {
     two.paragraphs.push(second);
     let slide_id = session.model().slides[1].id;
     session.document.execute(vec![Command::SetTextBody { slide: slide_id, shape: ShapeId(page), body: two }]).unwrap();
-    apply(
-        &mut session,
-        &format!(r#"{{"op": "set_text", "slide": {slide}, "shape": {page}, "text": ["one", ["two ", {{"field": "slide_number"}}]]}}"#),
-    )
-    .unwrap();
-    let after = body(&session);
-    let (field, words) = split(&after.paragraphs[1].runs);
+    set_text(&mut session, slide, page, r#"["one", "two {{slide_number}}"]"#).unwrap();
+    let (field, words) = split(&body(&session).paragraphs[1].runs);
     assert_eq!(words, "two ");
     assert_eq!(field[0].style.italic, Some(true));
 }
@@ -160,7 +142,7 @@ fn each_paragraph_keeps_its_own_field() {
 #[test]
 fn an_empty_text_is_one_empty_paragraph() {
     let (mut session, slide, page, _) = with_fields();
-    apply(&mut session, &format!(r#"{{"op": "set_text", "slide": {slide}, "shape": {page}, "text": []}}"#)).unwrap();
+    set_text(&mut session, slide, page, "[]").unwrap();
     let body = session.model().slides[1].shape(ShapeId(page)).unwrap().text_body().unwrap();
     assert_eq!(body.paragraphs.len(), 1);
     assert!(body.paragraphs[0].runs.is_empty());
@@ -172,7 +154,7 @@ fn an_empty_text_is_one_empty_paragraph() {
 fn replace_text_leaves_a_field_alone() {
     let (mut session, slide, page, made) = with_fields();
     apply(&mut session, r#"{"op": "replace_text", "find": "ページ", "replace": "Page"}"#).unwrap();
-    assert_eq!(text_of(&session, slide, page), vec![ParagraphText::Pieces(vec![Piece::Text("Page ".into()), field(FieldName::SlideNumber)])]);
+    assert_eq!(text_of(&session, slide, page), ["Page {{slide_number}}"]);
     let err = apply(&mut session, r#"{"op": "replace_text", "find": "2026年", "replace": "x"}"#).unwrap_err();
     assert!(err.message.contains("not in the text"), "{err}");
     assert_eq!(split(&runs(&session, made)).0.iter().map(|r| r.text.as_str()).collect::<String>(), "2026年10月1日");
@@ -186,12 +168,12 @@ fn apply(session: &mut Session, json: &str) -> Result<Applied, OpError> {
     session.apply(&parse_ops(json).unwrap())
 }
 
-fn texts(session: &Session) -> Vec<Vec<Vec<ParagraphText>>> {
+fn texts(session: &Session) -> Vec<Vec<Vec<String>>> {
     session.inspect().into_presentation().slides.iter().map(|s| s.shapes.iter().filter_map(|sh| sh.text.clone()).collect()).collect()
 }
 
-fn paragraphs(list: &[&str]) -> Vec<ParagraphText> {
-    list.iter().map(|p| ParagraphText::Plain(p.to_string())).collect()
+fn paragraphs(list: &[&str]) -> Vec<String> {
+    list.iter().map(|p| p.to_string()).collect()
 }
 
 /// The new presentation's title slide, its layouts and its empty placeholders, as the agent reads them.
@@ -403,11 +385,7 @@ fn table_rows_are_inserted_and_deleted() {
     apply(&mut session, &format!(r#"[{{"op": "insert_table_row", "slide": {slide}, "shape": {table}, "at": 1}}, {{"op": "set_cell", "slide": {slide}, "shape": {table}, "row": 1, "column": 0, "text": ["new"]}}]"#)).unwrap();
     let cells = |s: &Session| -> Vec<Vec<String>> {
         let cells = s.inspect().into_presentation().slides[0].shapes.iter().find(|s| s.kind == "table").unwrap().cells.clone().unwrap();
-        let plain = |p: ParagraphText| match p {
-            ParagraphText::Plain(text) => text,
-            pieces => panic!("a field in {pieces:?}"),
-        };
-        cells.into_iter().map(|row| row.into_iter().map(|cell| cell.into_iter().map(plain).collect::<Vec<_>>().join("|")).collect()).collect()
+        cells.into_iter().map(|row| row.into_iter().map(|cell| cell.join("|")).collect()).collect()
     };
     assert_eq!(cells(&session), vec![vec!["a", "b"], vec!["new", ""], vec!["c", "d"]]);
     apply(&mut session, &format!(r#"{{"op": "delete_table_row", "slide": {slide}, "shape": {table}, "at": 0}}"#)).unwrap();

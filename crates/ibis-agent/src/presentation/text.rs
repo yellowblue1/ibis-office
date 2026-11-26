@@ -1,25 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
-//! A presentation's text as the agent reads and writes it. A paragraph is its string; one holding a field — text the
-//! presentation works out, a slide number or a date (`a:fld`) — is its pieces in order instead, each a string or the
-//! field as `{"field": "slide_number"}` or `{"field": "date"}`: the text `[["Page ", {"field": "slide_number"}]]`.
-//! Given back, a field stays the field it was, so the number goes on following the slide; a field is kept, never made.
+//! A presentation's text as the agent reads and writes it: its paragraphs, each a string, a field in one — text the
+//! presentation works out, a slide number or a date (`a:fld`) — as its mark, `{{slide_number}}` or `{{date}}`, where
+//! the number or date stands: `["Page {{slide_number}}"]`. Given back, a mark stays the field it was, so the number
+//! goes on following the slide; a field is kept, never made. A mark in a string, not a piece of its own, because a
+//! paragraph stays one string every model writes alike, and a translation keeps such a mark as it is.
 
 use ibis_doc_model::text::{Paragraph, Run, RunStyle, TextBody, TextField};
-use serde::{Deserialize, Serialize, Serializer};
-use serde_json::Value;
+use serde::Deserialize;
 
 use crate::shared::check_paragraph;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FieldName {
+enum FieldName {
     SlideNumber,
     Date,
 }
 
 impl FieldName {
-    const NAMES: [(FieldName, &'static str); 2] = [(FieldName::SlideNumber, "slide_number"), (FieldName::Date, "date")];
+    const MARKS: [(FieldName, &'static str); 2] = [(FieldName::SlideNumber, "{{slide_number}}"), (FieldName::Date, "{{date}}")];
 
     fn of(field: TextField) -> Self {
         match field {
@@ -28,58 +28,29 @@ impl FieldName {
         }
     }
 
-    fn name(self) -> &'static str {
-        Self::NAMES.iter().find(|(f, _)| *f == self).expect("every field is named").1
-    }
-
-    fn named(name: &str) -> Option<Self> {
-        Self::NAMES.iter().find(|(_, n)| *n == name).map(|(f, _)| *f)
+    fn mark(self) -> &'static str {
+        Self::MARKS.iter().find(|(f, _)| *f == self).expect("every field has a mark").1
     }
 }
 
-impl Serialize for FieldName {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.name())
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct FieldPiece {
-    pub field: FieldName,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(untagged)]
-pub enum Piece {
-    Text(String),
-    Field(FieldPiece),
-}
-
-/// A paragraph as the summary gives it and the operations take it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(untagged)]
-pub enum ParagraphText {
-    Plain(String),
-    Pieces(Vec<Piece>),
-}
-
-/// What a paragraph's runs are, in order: words, or a field with its runs (one field in a row is one, a date split
-/// where its script changes among them). An empty run of words is left out.
-enum Group {
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Piece {
     Words(String),
-    Field(FieldName, Vec<Run>),
+    Field(FieldName),
 }
 
-fn groups(paragraph: &Paragraph) -> Vec<Group> {
-    let mut out: Vec<Group> = Vec::new();
+/// A paragraph's runs, in order: words, or a field with its runs (one field in a row is one, a date split where its
+/// script changes among them). An empty run of words is left out.
+fn groups(paragraph: &Paragraph) -> Vec<(Piece, Vec<Run>)> {
+    let mut out: Vec<(Piece, Vec<Run>)> = Vec::new();
     let mut last = None;
     for run in &paragraph.runs {
         match (run.style.field, out.last_mut()) {
-            (Some(field), Some(Group::Field(_, runs))) if last == Some(field) => runs.push(run.clone()),
-            (Some(field), _) => out.push(Group::Field(FieldName::of(field), vec![run.clone()])),
+            (Some(field), Some((Piece::Field(_), runs))) if last == Some(field) => runs.push(run.clone()),
+            (Some(field), _) => out.push((Piece::Field(FieldName::of(field)), vec![run.clone()])),
             (None, _) if run.text.is_empty() => {}
-            (None, Some(Group::Words(words))) => words.push_str(&run.text),
-            (None, _) => out.push(Group::Words(run.text.clone())),
+            (None, Some((Piece::Words(words), _))) => words.push_str(&run.text),
+            (None, _) => out.push((Piece::Words(run.text.clone()), Vec::new())),
         }
         last = run.style.field;
     }
@@ -87,76 +58,55 @@ fn groups(paragraph: &Paragraph) -> Vec<Group> {
 }
 
 fn pieces_of(paragraph: &Paragraph) -> Vec<Piece> {
-    groups(paragraph)
-        .into_iter()
-        .map(|g| match g {
-            Group::Words(words) => Piece::Text(words),
-            Group::Field(field, _) => Piece::Field(FieldPiece { field }),
-        })
-        .collect()
+    groups(paragraph).into_iter().map(|(piece, _)| piece).collect()
 }
 
-pub fn read_paragraphs(body: &TextBody) -> Vec<ParagraphText> {
+/// The body's paragraphs as the summary gives them.
+pub fn read_paragraphs(body: &TextBody) -> Vec<String> {
     body.paragraphs
         .iter()
         .map(|p| {
-            let mut pieces = pieces_of(p);
-            match pieces.as_slice() {
-                [] => ParagraphText::Plain(String::new()),
-                [Piece::Text(_)] => match pieces.remove(0) {
-                    Piece::Text(text) => ParagraphText::Plain(text),
-                    Piece::Field(_) => unreachable!(),
-                },
-                _ => ParagraphText::Pieces(pieces),
-            }
+            pieces_of(p)
+                .into_iter()
+                .map(|piece| match piece {
+                    Piece::Words(words) => words,
+                    Piece::Field(field) => field.mark().to_string(),
+                })
+                .collect()
         })
         .collect()
 }
 
-/// Text as its paragraphs, each its pieces (a plain paragraph is one piece, an empty one none); no paragraph at all is
-/// one empty paragraph, as a text always has one.
+/// A paragraph's string as pieces: its marks fields, the rest words.
+fn parse(text: &str) -> Vec<Piece> {
+    let mut pieces = Vec::new();
+    let mut rest = text;
+    while let Some((at, field)) = FieldName::MARKS.iter().filter_map(|(f, mark)| rest.find(mark).map(|at| (at, *f))).min_by_key(|(at, _)| *at) {
+        if at > 0 {
+            pieces.push(Piece::Words(rest[..at].to_string()));
+        }
+        pieces.push(Piece::Field(field));
+        rest = &rest[at + field.mark().len()..];
+    }
+    if !rest.is_empty() {
+        pieces.push(Piece::Words(rest.to_string()));
+    }
+    pieces
+}
+
+/// Text as its paragraphs, each its pieces; no paragraph at all is one empty paragraph, as a text always has one.
 #[derive(Clone, Debug, Deserialize)]
-#[serde(try_from = "Vec<Value>")]
+#[serde(try_from = "Vec<String>")]
 pub struct SlideText(Vec<Vec<Piece>>);
 
-impl TryFrom<Vec<Value>> for SlideText {
+impl TryFrom<Vec<String>> for SlideText {
     type Error = String;
 
-    fn try_from(paragraphs: Vec<Value>) -> Result<Self, String> {
-        let mut out = Vec::with_capacity(paragraphs.len().max(1));
-        for (i, paragraph) in paragraphs.into_iter().enumerate() {
-            let given = match paragraph {
-                Value::String(text) => vec![Value::String(text)],
-                Value::Array(pieces) => pieces,
-                _ => return Err(format!("paragraph {i} is neither a string nor a list of pieces")),
-            };
-            let mut pieces: Vec<Piece> = Vec::new();
-            for given in given {
-                match given {
-                    Value::String(text) => {
-                        check_paragraph(i, &text)?;
-                        match pieces.last_mut() {
-                            _ if text.is_empty() => {}
-                            Some(Piece::Text(before)) => before.push_str(&text),
-                            _ => pieces.push(Piece::Text(text)),
-                        }
-                    }
-                    Value::Object(object) => {
-                        let field = match (object.len(), object.get("field")) {
-                            (1, Some(Value::String(name))) => FieldName::named(name),
-                            _ => None,
-                        };
-                        let field = field.ok_or_else(|| {
-                            let names: Vec<&str> = FieldName::NAMES.iter().map(|(_, n)| *n).collect();
-                            format!("paragraph {i}: a field is {{\"field\": one of {names:?}}}, not {}", Value::Object(object))
-                        })?;
-                        pieces.push(Piece::Field(FieldPiece { field }));
-                    }
-                    other => return Err(format!("paragraph {i}: a piece is a string or a field, not {other}")),
-                }
-            }
-            out.push(pieces);
+    fn try_from(paragraphs: Vec<String>) -> Result<Self, String> {
+        for (i, p) in paragraphs.iter().enumerate() {
+            check_paragraph(i, p)?;
         }
+        let mut out: Vec<Vec<Piece>> = paragraphs.iter().map(|p| parse(p)).collect();
         if out.is_empty() {
             out.push(Vec::new());
         }
@@ -173,15 +123,17 @@ struct Kept {
 }
 
 impl SlideText {
-    /// The paragraphs joined by `\n`, for text that holds no field (speaker notes, a shape being made).
+    /// The paragraphs joined by `\n`, for text that keeps no field (speaker notes, a shape being made).
     pub fn plain(&self, what: &str) -> Result<String, String> {
         let mut lines = Vec::with_capacity(self.0.len());
         for pieces in &self.0 {
             let mut line = String::new();
             for piece in pieces {
                 match piece {
-                    Piece::Text(text) => line.push_str(text),
-                    Piece::Field(_) => return Err(format!("{what} has no field to keep: a field (a slide number, a date) stays in the text it was in, and is not made")),
+                    Piece::Words(words) => line.push_str(words),
+                    Piece::Field(field) => {
+                        return Err(format!("{what} has no field to keep ({}): a field (a slide number, a date) stays in the text it was in, and is not made", field.mark()));
+                    }
                 }
             }
             lines.push(line);
@@ -191,17 +143,17 @@ impl SlideText {
 
     /// `body` with its text replaced. A paragraph given as it reads stays as it is. Another, paragraph `i`, keeps the
     /// format of the old paragraph `i` (the last one's, past its end), its words that of the old paragraph's first
-    /// words, and each field one of the old text's of its kind not given yet, as it was: old paragraph `i`'s first,
-    /// then the text's first. A field more than the old text had is refused.
+    /// words, and each mark one of the old text's fields of its kind not given yet, as it was: old paragraph `i`'s
+    /// first, then the text's first. A mark more than the old text had fields is refused.
     pub fn replace(&self, body: &TextBody) -> Result<TextBody, String> {
         let old = &body.paragraphs;
         let mut kept: Vec<Kept> = old
             .iter()
             .enumerate()
             .flat_map(|(paragraph, p)| {
-                groups(p).into_iter().filter_map(move |g| match g {
-                    Group::Field(field, runs) => Some(Kept { paragraph, field, runs, used: false }),
-                    Group::Words(_) => None,
+                groups(p).into_iter().filter_map(move |(piece, runs)| match piece {
+                    Piece::Field(field) => Some(Kept { paragraph, field, runs, used: false }),
+                    Piece::Words(_) => None,
                 })
             })
             .collect();
@@ -226,13 +178,13 @@ impl SlideText {
             let mut runs = Vec::new();
             for piece in pieces {
                 match piece {
-                    Piece::Text(text) => runs.push(Run { text: text.clone(), style: style.clone() }),
-                    Piece::Field(FieldPiece { field }) => {
+                    Piece::Words(words) => runs.push(Run { text: words.clone(), style: style.clone() }),
+                    Piece::Field(field) => {
                         let free = |k: &Kept| !k.used && k.field == *field;
                         let at = kept.iter().position(|k| free(k) && k.paragraph == i).or_else(|| kept.iter().position(free)).ok_or_else(|| {
                             format!(
                                 "paragraph {i}: the text has no more {} fields to keep (it had {}): a field stays in the text it was in, and is not made",
-                                field.name(),
+                                field.mark(),
                                 kept.iter().filter(|k| k.field == *field).count()
                             )
                         })?;
