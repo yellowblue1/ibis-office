@@ -12,12 +12,13 @@ use ibis_doc_model::command::Command;
 use ibis_doc_model::drawing::{Color, Fill, Rgb, Stroke};
 use ibis_doc_model::geometry::{EMU_PER_POINT, EmuRect};
 use ibis_doc_model::model::{AutoShape, Presentation, Shape, ShapeId, ShapeKind, Slide, SlideId};
-use ibis_doc_model::text::{CharacterFormat, ListKind, Paragraph, Run, TextAlign, TextBody, TextStyle, VerticalAnchor};
+use ibis_doc_model::text::{CharacterFormat, ListKind, TextAlign, TextBody, TextStyle, VerticalAnchor};
 use ibis_doc_model::{Document, Table};
 use ibis_pptx::Source;
 use serde::{Deserialize, Serialize};
 
-use crate::shared::{Align, List, ParagraphFormat, Text, TextFormat, font_size, occurrences, rgb};
+use super::text::{SlideText, field_spans};
+use crate::shared::{Align, List, ParagraphFormat, TextFormat, font_size, occurrences, rgb};
 use crate::{OpError, Planned};
 
 /// A slide or a shape: its id, or the `as` name of one made earlier in the same list; a shape also as the placeholder
@@ -60,12 +61,12 @@ pub enum Op {
         #[serde(rename = "as")]
         name: Option<String>,
     },
-    SetNotes { slide: Ref, text: Text },
+    SetNotes { slide: Ref, text: SlideText },
     SetBackground { slide: Ref, color: String },
     AddTextBox {
         slide: Ref,
         frame: Rect,
-        text: Text,
+        text: SlideText,
         format: Option<TextFormat>,
         #[serde(rename = "as")]
         name: Option<String>,
@@ -77,7 +78,7 @@ pub enum Op {
         frame: Rect,
         fill: Option<String>,
         line: Option<String>,
-        text: Option<Text>,
+        text: Option<SlideText>,
         #[serde(rename = "as")]
         name: Option<String>,
     },
@@ -85,7 +86,7 @@ pub enum Op {
     AddTable {
         slide: Ref,
         frame: Option<Rect>,
-        rows: Vec<Vec<Text>>,
+        rows: Vec<Vec<SlideText>>,
         #[serde(rename = "as")]
         name: Option<String>,
     },
@@ -93,7 +94,7 @@ pub enum Op {
     /// Move or resize a shape: what is given is set.
     SetFrame { slide: Ref, shape: Ref, x: Option<f64>, y: Option<f64>, w: Option<f64>, h: Option<f64> },
     /// Replace a shape's text, each paragraph keeping the format of the one it replaces.
-    SetText { slide: Ref, shape: Ref, text: Text },
+    SetText { slide: Ref, shape: Ref, text: SlideText },
     /// Replace every `find` with `replace`, in the shapes and table cells of `slide` (all slides when not given) or
     /// of `shape` only, keeping the format of the text replaced.
     ReplaceText { find: String, replace: String, slide: Option<Ref>, shape: Option<Ref> },
@@ -113,7 +114,7 @@ pub enum Op {
     /// A shape's outline: `color` and `width` (points; 0.75 when not given), or none (`color` `null`).
     SetLine { slide: Ref, shape: Ref, color: Option<String>, width: Option<f64> },
     /// Replace the text of the cell at `row`, `column` (0-based) of a table.
-    SetCell { slide: Ref, shape: Ref, row: usize, column: usize, text: Text },
+    SetCell { slide: Ref, shape: Ref, row: usize, column: usize, text: SlideText },
     /// A row inserted into a table at `at` (0-based; the end when not given), formatted as the table's style does.
     InsertTableRow { slide: Ref, shape: Ref, at: Option<usize> },
     DeleteTableRow { slide: Ref, shape: Ref, at: usize },
@@ -228,15 +229,16 @@ impl Planner<'_> {
                 let copy = p.duplicate_slide(from, id).ok_or("no such slide")?;
                 Ok((vec![Command::InsertSlide { index, slide: copy }], Created { slide: Some(id.0), ..Default::default() }, name.clone()))
             }
-            Op::SetNotes { slide, text } => none(vec![Command::SetNotes { slide: self.slide(slide)?, notes: text.as_str().to_string() }]),
+            Op::SetNotes { slide, text } => none(vec![Command::SetNotes { slide: self.slide(slide)?, notes: text.plain("a slide's notes")? }]),
             Op::SetBackground { slide, color } => none(vec![Command::SetBackground { slide: self.slide(slide)?, fill: Fill::Solid(Color::opaque(rgb(color)?)) }]),
             Op::AddTextBox { slide, frame, text, format, name } => {
                 let slide = self.slide(slide)?;
                 let id = ShapeId((self.new_id)());
-                let shape = Shape::text_box(id, emu_rect(frame)?, text.as_str());
+                let text = text.plain("a new text box")?;
+                let shape = Shape::text_box(id, emu_rect(frame)?, &text);
                 let mut commands = vec![self.insert(slide, shape)];
                 if let Some(format) = format {
-                    let len = text.as_str().chars().count();
+                    let len = text.chars().count();
                     commands.push(Command::SetCharacterFormat { slide, shape: id, start: 0, end: len, format: character_format(format)? });
                 }
                 Ok((commands, Created { slide: Some(slide.0), shape: Some(id.0), ..Default::default() }, name.clone()))
@@ -253,7 +255,7 @@ impl Planner<'_> {
                     None => None,
                 };
                 let mut auto = AutoShape::new(outline, fill, stroke);
-                auto.text = text.as_ref().map(|t| shape_text(t.as_str()));
+                auto.text = text.as_ref().map(|t| t.plain("a new shape").map(|t| shape_text(&t))).transpose()?;
                 let id = ShapeId((self.new_id)());
                 let shape = Shape::new(id, emu_rect(frame)?, ShapeKind::Auto(auto));
                 Ok((vec![self.insert(slide, shape)], Created { slide: Some(slide.0), shape: Some(id.0), ..Default::default() }, name.clone()))
@@ -278,7 +280,7 @@ impl Planner<'_> {
                     for (c, text) in line.iter().enumerate() {
                         let cell = &mut table.rows[r].cells[c];
                         let len = cell.text.text().chars().count();
-                        cell.text.splice(0, len, text.as_str());
+                        cell.text.splice(0, len, &text.plain("a new table")?);
                     }
                 }
                 let id = ShapeId((self.new_id)());
@@ -301,10 +303,10 @@ impl Planner<'_> {
                 let (slide, id) = self.shape(slide, shape)?;
                 let target = p.slide(slide).and_then(|s| s.shape(id)).expect("resolved");
                 match (&target.kind, target.text_body()) {
-                    (_, Some(body)) => none(vec![Command::SetTextBody { slide, shape: id, body: replaced(body, text.as_str()) }]),
+                    (_, Some(body)) => none(vec![Command::SetTextBody { slide, shape: id, body: text.replace(body)? }]),
                     (ShapeKind::Auto(auto), None) => {
                         let mut auto = auto.clone();
-                        auto.text = Some(shape_text(text.as_str()));
+                        auto.text = Some(shape_text(&text.plain("the shape's text")?));
                         none(vec![Command::SetKind { slide, shape: id, kind: Box::new(ShapeKind::Auto(auto)) }])
                     }
                     _ => Err(format!("shape {} has no text (a table's cells are set with set_cell)", id.0)),
@@ -330,7 +332,7 @@ impl Planner<'_> {
                     for target in slide.shapes.iter().filter(|s| only.is_none_or(|o| o == s.id)) {
                         let edit = |at, remove, insert: &str| Command::ReplaceText { slide: slide_id, shape: target.id, at, remove, insert: insert.to_string() };
                         if let Some(body) = target.text_body() {
-                            for at in occurrences(&body.text(), find).into_iter().rev() {
+                            for at in outside_fields(body, find).into_iter().rev() {
                                 commands.push(edit(at, find.chars().count(), replace));
                                 count += 1;
                             }
@@ -338,7 +340,7 @@ impl Planner<'_> {
                         if let ShapeKind::Table(table) = &target.kind {
                             for (r, row) in table.rows.iter().enumerate() {
                                 for (c, cell) in row.cells.iter().enumerate() {
-                                    for at in occurrences(&cell.text.text(), find).into_iter().rev() {
+                                    for at in outside_fields(&cell.text, find).into_iter().rev() {
                                         commands.push(Command::InCell { row: r, column: c, command: Box::new(edit(at, find.chars().count(), replace)) });
                                         count += 1;
                                     }
@@ -397,7 +399,7 @@ impl Planner<'_> {
             Op::SetCell { slide, shape, row, column, text } => {
                 let (slide, id) = self.shape(slide, shape)?;
                 let body = self.body(slide, id, Some([*row, *column]))?;
-                none(vec![in_cell(Some([*row, *column]), Command::SetTextBody { slide, shape: id, body: replaced(body, text.as_str()) })])
+                none(vec![in_cell(Some([*row, *column]), Command::SetTextBody { slide, shape: id, body: text.replace(body)? })])
             }
             Op::InsertTableRow { slide, shape, at } => {
                 let (slide, id) = self.shape(slide, shape)?;
@@ -510,20 +512,12 @@ fn in_cell(cell: Option<[usize; 2]>, command: Command) -> Command {
     }
 }
 
-/// `body` with its text replaced by `text`: paragraph `i` keeps the format of the old paragraph `i` (the last one's, past
-/// its end), and its characters that of the old paragraph's first run.
-fn replaced(body: &TextBody, text: &str) -> TextBody {
-    let old = &body.paragraphs;
-    let paragraphs = text
-        .split('\n')
-        .enumerate()
-        .map(|(i, line)| {
-            let template = old.get(i).or(old.last()).cloned().unwrap_or_default();
-            let style = template.runs.first().map_or_else(|| template.end_style.clone(), |r| r.style.clone());
-            Paragraph { runs: if line.is_empty() { Vec::new() } else { vec![Run { text: line.to_string(), style: style.clone() }] }, end_style: style, ..template }
-        })
-        .collect();
-    TextBody { paragraphs, ..body.clone() }
+/// Where `find` is in the body's text, leaving out a place that takes in a field's characters: the summary gives a field
+/// as itself, not as the number or date it shows.
+fn outside_fields(body: &TextBody, find: &str) -> Vec<usize> {
+    let fields = field_spans(body);
+    let len = find.chars().count();
+    occurrences(&body.text(), find).into_iter().filter(|&at| fields.iter().all(|&(start, end)| at + len <= start || at >= end)).collect()
 }
 
 /// The text of a new shape: centred in it, as PowerPoint's shapes have theirs.

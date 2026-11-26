@@ -5,9 +5,11 @@
 
 mod inspect;
 mod ops;
+mod text;
 
 pub use inspect::{Inspection, inspect};
 pub use ops::{Created, Op, plan};
+pub use text::{FieldName, FieldPiece, ParagraphText, Piece};
 
 #[cfg(test)]
 mod tests;

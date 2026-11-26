@@ -8,8 +8,9 @@
 use ibis_doc_model::drawing::Fill;
 use ibis_doc_model::geometry::EMU_PER_POINT;
 use ibis_doc_model::model::{Presentation, Shape, ShapeKind, Slide};
-use ibis_doc_model::text::TextBody;
 use serde::Serialize;
+
+use super::text::{ParagraphText, read_body as paragraphs};
 
 #[derive(Debug, Serialize)]
 pub struct Inspection {
@@ -66,13 +67,13 @@ pub struct ShapeInfo {
     pub fill: Option<String>,
     /// Its paragraphs, in the shape [`Op`](crate::presentation::Op)s take text in.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub text: Option<Vec<String>>,
+    pub text: Option<Vec<ParagraphText>>,
     /// The size of the text's first character, in points.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub font_size: Option<f64>,
     /// A table's cells' paragraphs, by row.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cells: Option<Vec<Vec<Vec<String>>>>,
+    pub cells: Option<Vec<Vec<Vec<ParagraphText>>>>,
 }
 
 pub fn inspect(presentation: &Presentation, name: &str, dirty: bool) -> Inspection {
@@ -131,10 +132,6 @@ fn shape_info(slide: &Slide, shape: &Shape) -> ShapeInfo {
         }),
         cells,
     }
-}
-
-fn paragraphs(body: &TextBody) -> Vec<String> {
-    body.paragraphs.iter().map(|p| p.text()).collect()
 }
 
 /// EMU in points, to a tenth.

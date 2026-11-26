@@ -2,10 +2,132 @@
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 
+use ibis_doc_model::command::Command;
+use ibis_doc_model::drawing::Rgb;
+use ibis_doc_model::geometry::EmuRect;
+use ibis_doc_model::model::{Shape, ShapeId, ShapeKind};
+use ibis_doc_model::text::{Run, RunStyle, TextBody, TextField, TextStyle};
+
+use super::{FieldName, FieldPiece, ParagraphText, Piece};
 use crate::{Applied, OpError, Ops, Session};
 
 fn blank() -> Session {
     Session::open(crate::blank("new.pptx").unwrap(), "new.pptx").unwrap()
+}
+
+/// A presentation of two slides whose second has a text box `ページ <slide number>` (its number bold red) and one
+/// `作成日 <date>`, as read back from its file.
+fn with_fields() -> (Session, u64, u64, u64) {
+    let mut session = blank();
+    let first = session.inspect().into_presentation().slides[0].id;
+    apply(&mut session, &format!(r#"{{"op": "duplicate_slide", "slide": {first}}}"#)).unwrap();
+    let slide = session.model().slides[1].id;
+    let number = RunStyle { field: Some(TextField::SlideNumber), bold: Some(true), color: Some(Rgb(0xC00000)), ..Default::default() };
+    let date = RunStyle { field: Some(TextField::DateTime { format: 4, east_asian: true }), ..Default::default() };
+    let mut page = TextBody::plain("ページ ", TextStyle::default());
+    page.paragraphs[0].runs.push(Run { text: "2".into(), style: number });
+    let mut made = TextBody::plain("作成日 ", TextStyle::default());
+    made.paragraphs[0].runs.push(Run { text: "2026年10月1日".into(), style: date });
+    let ids = session.document.ids();
+    let (a, b) = (ids.new_shape_id(), ids.new_shape_id());
+    let frame = EmuRect::new(1_000_000, 1_000_000, 2_000_000, 400_000);
+    session
+        .document
+        .execute(vec![
+            Command::InsertShape { slide, index: 0, shape: Shape::new(a, frame, ShapeKind::TextBox(page)) },
+            Command::InsertShape { slide, index: 1, shape: Shape::new(b, frame, ShapeKind::TextBox(made)) },
+        ])
+        .unwrap();
+    let session = Session::open(session.save().unwrap(), "fields.pptx").unwrap();
+    let doc = session.inspect().into_presentation();
+    let slide = &doc.slides[1];
+    let id = |start: &str| slide.shapes.iter().find(|s| serde_json::to_string(&s.text).unwrap().contains(start)).unwrap().id;
+    let (page, made) = (id("ページ"), id("作成日"));
+    (session, slide.id, page, made)
+}
+
+fn field(field: FieldName) -> Piece {
+    Piece::Field(FieldPiece { field })
+}
+
+fn text_of(session: &Session, slide: u64, shape: u64) -> Vec<ParagraphText> {
+    let doc = session.inspect().into_presentation();
+    doc.slides.iter().find(|s| s.id == slide).unwrap().shapes.iter().find(|s| s.id == shape).unwrap().text.clone().unwrap()
+}
+
+fn runs(session: &Session, shape: u64) -> Vec<Run> {
+    session.model().slides[1].shape(ShapeId(shape)).unwrap().text_body().unwrap().paragraphs[0].runs.clone()
+}
+
+/// The runs of the paragraph's field, and the text around it.
+fn split(runs: &[Run]) -> (Vec<Run>, String) {
+    let (field, words): (Vec<Run>, Vec<Run>) = runs.iter().cloned().partition(|r| r.style.field.is_some());
+    (field, words.iter().map(|r| r.text.as_str()).collect())
+}
+
+/// A field reads as itself among the paragraph's words, and given back with other words it stays the field it was: the
+/// number follows the slide, and keeps its own format.
+#[test]
+fn a_field_is_read_as_itself_and_kept_when_the_words_change() {
+    let (mut session, slide, page, made) = with_fields();
+    assert_eq!(text_of(&session, slide, page), vec![ParagraphText::Pieces(vec![Piece::Text("ページ ".into()), field(FieldName::SlideNumber)])]);
+    let json = serde_json::to_string(&text_of(&session, slide, made)).unwrap();
+    assert_eq!(json, r#"[["作成日 ",{"field":"date"}]]"#);
+
+    let (number, _) = split(&runs(&session, page));
+    let (date, _) = split(&runs(&session, made));
+    let before = session.model().slides.clone();
+    let given_back = serde_json::to_string(&text_of(&session, slide, page)).unwrap();
+    apply(&mut session, &format!(r#"{{"op": "set_text", "slide": {slide}, "shape": {page}, "text": {given_back}}}"#)).unwrap();
+    assert_eq!(session.model().slides, before);
+
+    apply(
+        &mut session,
+        &format!(
+            r#"[{{"op": "set_text", "slide": {slide}, "shape": {page}, "text": [["Page ", {{"field": "slide_number"}}, " of the deck"]]}},
+                {{"op": "set_text", "slide": {slide}, "shape": {made}, "text": [["Made ", {{"field": "date"}}]]}}]"#
+        ),
+    )
+    .unwrap();
+    let page_runs = runs(&session, page);
+    assert_eq!(page_runs.iter().map(|r| r.text.as_str()).collect::<String>(), "Page 2 of the deck");
+    assert_eq!(page_runs[1..1 + number.len()], number[..]);
+    assert_eq!(number[0].style.bold, Some(true));
+    assert_eq!(split(&runs(&session, made)), (date.clone(), "Made ".to_string()));
+    assert_eq!(date[0].style.field, Some(TextField::DateTime { format: 4, east_asian: true }));
+
+    apply(&mut session, &format!(r#"{{"op": "move_slide", "slide": {slide}, "index": 0}}"#)).unwrap();
+    let saved = Session::open(session.save().unwrap(), "saved.pptx").unwrap();
+    let body = saved.model().slides[0].shapes.iter().filter_map(|s| s.text_body()).find(|b| b.text().starts_with("Page")).unwrap();
+    assert_eq!(body.text(), "Page 1 of the deck");
+    assert_eq!(split(&body.paragraphs[0].runs).0.iter().map(|r| r.text.as_str()).collect::<String>(), "1");
+}
+
+/// Plain words over a paragraph that had a field leave the field out, as asked; a field the text never had is refused,
+/// as is one in text that keeps none (notes, a shape being made).
+#[test]
+fn a_field_is_kept_and_never_made() {
+    let (mut session, slide, page, _) = with_fields();
+    apply(&mut session, &format!(r#"{{"op": "set_text", "slide": {slide}, "shape": {page}, "text": ["Page two"]}}"#)).unwrap();
+    assert!(runs(&session, page).iter().all(|r| r.style.field.is_none()));
+
+    let err = apply(&mut session, &format!(r#"{{"op": "set_text", "slide": {slide}, "shape": {page}, "text": [["Page ", {{"field": "slide_number"}}]]}}"#)).unwrap_err();
+    assert!(err.message.contains("no slide_number field to keep"), "{err}");
+    let err = apply(&mut session, &format!(r#"{{"op": "set_notes", "slide": {slide}, "text": [["p. ", {{"field": "slide_number"}}]]}}"#)).unwrap_err();
+    assert!(err.message.contains("has no field to keep"), "{err}");
+    let err = parse_ops(&format!(r#"{{"op": "set_text", "slide": {slide}, "shape": {page}, "text": [[{{"field": "page"}}]]}}"#)).unwrap_err();
+    assert!(err.contains("operation 0"), "{err}");
+}
+
+/// Replace text changes the words around a field and never the number or date it shows.
+#[test]
+fn replace_text_leaves_a_field_alone() {
+    let (mut session, slide, page, made) = with_fields();
+    apply(&mut session, r#"{"op": "replace_text", "find": "ページ", "replace": "Page"}"#).unwrap();
+    assert_eq!(text_of(&session, slide, page), vec![ParagraphText::Pieces(vec![Piece::Text("Page ".into()), field(FieldName::SlideNumber)])]);
+    let err = apply(&mut session, r#"{"op": "replace_text", "find": "2026年", "replace": "x"}"#).unwrap_err();
+    assert!(err.message.contains("not in the text"), "{err}");
+    assert_eq!(split(&runs(&session, made)).0.iter().map(|r| r.text.as_str()).collect::<String>(), "2026年10月1日");
 }
 
 fn parse_ops(json: &str) -> Result<Ops, String> {
@@ -16,12 +138,12 @@ fn apply(session: &mut Session, json: &str) -> Result<Applied, OpError> {
     session.apply(&parse_ops(json).unwrap())
 }
 
-fn texts(session: &Session) -> Vec<Vec<Vec<String>>> {
+fn texts(session: &Session) -> Vec<Vec<Vec<ParagraphText>>> {
     session.inspect().into_presentation().slides.iter().map(|s| s.shapes.iter().filter_map(|sh| sh.text.clone()).collect()).collect()
 }
 
-fn paragraphs(list: &[&str]) -> Vec<String> {
-    list.iter().map(|p| p.to_string()).collect()
+fn paragraphs(list: &[&str]) -> Vec<ParagraphText> {
+    list.iter().map(|p| ParagraphText::Plain(p.to_string())).collect()
 }
 
 /// The new presentation's title slide, its layouts and its empty placeholders, as the agent reads them.
@@ -233,7 +355,11 @@ fn table_rows_are_inserted_and_deleted() {
     apply(&mut session, &format!(r#"[{{"op": "insert_table_row", "slide": {slide}, "shape": {table}, "at": 1}}, {{"op": "set_cell", "slide": {slide}, "shape": {table}, "row": 1, "column": 0, "text": ["new"]}}]"#)).unwrap();
     let cells = |s: &Session| -> Vec<Vec<String>> {
         let cells = s.inspect().into_presentation().slides[0].shapes.iter().find(|s| s.kind == "table").unwrap().cells.clone().unwrap();
-        cells.into_iter().map(|row| row.into_iter().map(|cell| cell.join("|")).collect()).collect()
+        let plain = |p: ParagraphText| match p {
+            ParagraphText::Plain(text) => text,
+            pieces => panic!("a field in {pieces:?}"),
+        };
+        cells.into_iter().map(|row| row.into_iter().map(|cell| cell.into_iter().map(plain).collect::<Vec<_>>().join("|")).collect()).collect()
     };
     assert_eq!(cells(&session), vec![vec!["a", "b"], vec!["new", ""], vec!["c", "d"]]);
     apply(&mut session, &format!(r#"{{"op": "delete_table_row", "slide": {slide}, "shape": {table}, "at": 0}}"#)).unwrap();
