@@ -17,7 +17,7 @@ use ibis_doc_model::{Document, Table};
 use ibis_pptx::Source;
 use serde::{Deserialize, Serialize};
 
-use super::text::{SlideText, field_spans};
+use super::text::{SlideText, field_spans, words_of};
 use crate::shared::{Align, List, ParagraphFormat, TextFormat, font_size, occurrences, rgb};
 use crate::{OpError, Planned};
 
@@ -316,6 +316,7 @@ impl Planner<'_> {
                 if find.is_empty() {
                     return Err("find is empty".into());
                 }
+                let (find, replace) = (&words_of(find, "find")?, &words_of(replace, "replace")?);
                 let slides: Vec<SlideId> = match slide {
                     Some(slide) => vec![self.slide(slide)?],
                     None if shape.is_some() => return Err("a shape is named with its slide".into()),
@@ -513,7 +514,7 @@ fn in_cell(cell: Option<[usize; 2]>, command: Command) -> Command {
 }
 
 /// Where `find` is in the body's text, leaving out a place that takes in a field's characters: the summary gives a field
-/// as itself, not as the number or date it shows.
+/// as its mark, not as the number or date it shows.
 fn outside_fields(body: &TextBody, find: &str) -> Vec<usize> {
     let fields = field_spans(body);
     let len = find.chars().count();

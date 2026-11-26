@@ -158,6 +158,45 @@ fn replace_text_leaves_a_field_alone() {
     let err = apply(&mut session, r#"{"op": "replace_text", "find": "2026年", "replace": "x"}"#).unwrap_err();
     assert!(err.message.contains("not in the text"), "{err}");
     assert_eq!(split(&runs(&session, made)).0.iter().map(|r| r.text.as_str()).collect::<String>(), "2026年10月1日");
+    let err = apply(&mut session, r#"{"op": "replace_text", "find": "Page {{slide_number}}", "replace": "p. {{slide_number}}"}"#).unwrap_err();
+    assert!(err.message.contains("find is words, not a field"), "{err}");
+}
+
+/// Words that read as a mark (a template's placeholder) are given with their braces doubled, and stay words.
+#[test]
+fn words_reading_as_a_mark_stay_words() {
+    let (mut session, slide, page, _) = with_fields();
+    set_text(&mut session, slide, page, r#"["発行 {{{{date}}}}", "ページ {{slide_number}}"]"#).unwrap();
+    assert_eq!(text_of(&session, slide, page), ["発行 {{{{date}}}}", "ページ {{slide_number}}"]);
+    let body = session.model().slides[1].shape(ShapeId(page)).unwrap().text_body().unwrap().clone();
+    assert_eq!(body.text(), "発行 {{date}}\nページ 2");
+    assert!(body.paragraphs[0].runs.iter().all(|r| r.style.field.is_none()));
+
+    let before = session.model().slides.clone();
+    let given_back = serde_json::to_string(&text_of(&session, slide, page)).unwrap();
+    set_text(&mut session, slide, page, &given_back).unwrap();
+    assert_eq!(session.model().slides, before);
+    apply(&mut session, r#"{"op": "replace_text", "find": "{{{{date}}}}", "replace": "2026年"}"#).unwrap();
+    assert_eq!(text_of(&session, slide, page), ["発行 2026年", "ページ {{slide_number}}"]);
+}
+
+/// A paragraph put above the others does not take the fields of those below: each keeps its own, in order.
+#[test]
+fn a_paragraph_put_above_leaves_the_fields_below_where_they_were() {
+    let (mut session, slide, page, _) = with_fields();
+    let body = |s: &Session| s.model().slides[1].shape(ShapeId(page)).unwrap().text_body().unwrap().clone();
+    let mut two = body(&session);
+    let mut second = two.paragraphs[0].clone();
+    for run in second.runs.iter_mut().filter(|r| r.style.field.is_some()) {
+        run.style.italic = Some(true);
+    }
+    two.paragraphs.push(second);
+    let slide_id = session.model().slides[1].id;
+    session.document.execute(vec![Command::SetTextBody { slide: slide_id, shape: ShapeId(page), body: two }]).unwrap();
+    set_text(&mut session, slide, page, r#"["Title", "A {{slide_number}}", "B {{slide_number}}"]"#).unwrap();
+    let after = body(&session);
+    assert_ne!(split(&after.paragraphs[1].runs).0[0].style.italic, Some(true));
+    assert_eq!(split(&after.paragraphs[2].runs).0[0].style.italic, Some(true));
 }
 
 fn parse_ops(json: &str) -> Result<Ops, String> {

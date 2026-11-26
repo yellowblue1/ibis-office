@@ -5,7 +5,9 @@
 //! presentation works out, a slide number or a date (`a:fld`) — as its mark, `{{slide_number}}` or `{{date}}`, where
 //! the number or date stands: `["Page {{slide_number}}"]`. Given back, a mark stays the field it was, so the number
 //! goes on following the slide; a field is kept, never made. A mark in a string, not a piece of its own, because a
-//! paragraph stays one string every model writes alike, and a translation keeps such a mark as it is.
+//! paragraph stays one string every model writes alike, and a translation keeps such a mark as it is. Words that
+//! themselves read as a mark (a template's `{{date}}`) are given with their braces doubled, `{{{{date}}}}`, and
+//! written back as those words.
 
 use ibis_doc_model::text::{Paragraph, Run, RunStyle, TextBody, TextField};
 use serde::Deserialize;
@@ -19,7 +21,7 @@ enum FieldName {
 }
 
 impl FieldName {
-    const MARKS: [(FieldName, &'static str); 2] = [(FieldName::SlideNumber, "{{slide_number}}"), (FieldName::Date, "{{date}}")];
+    const ALL: [FieldName; 2] = [FieldName::SlideNumber, FieldName::Date];
 
     fn of(field: TextField) -> Self {
         match field {
@@ -29,8 +31,30 @@ impl FieldName {
     }
 
     fn mark(self) -> &'static str {
-        Self::MARKS.iter().find(|(f, _)| *f == self).expect("every field has a mark").1
+        match self {
+            FieldName::SlideNumber => "{{slide_number}}",
+            FieldName::Date => "{{date}}",
+        }
     }
+
+    /// How words reading as the mark are given.
+    fn escaped(self) -> &'static str {
+        match self {
+            FieldName::SlideNumber => "{{{{slide_number}}}}",
+            FieldName::Date => "{{{{date}}}}",
+        }
+    }
+}
+
+/// The words `text` gives (an escaped mark as the mark's words), or what is wrong when it holds a field's mark.
+pub fn words_of(text: &str, what: &str) -> Result<String, String> {
+    parse(text)
+        .into_iter()
+        .map(|piece| match piece {
+            Piece::Words(words) => Ok(words),
+            Piece::Field(field) => Err(format!("{what} is words, not a field: leave {} out (set_text keeps a mark where it goes)", field.mark())),
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,7 +93,7 @@ pub fn read_paragraphs(body: &TextBody) -> Vec<String> {
             pieces_of(p)
                 .into_iter()
                 .map(|piece| match piece {
-                    Piece::Words(words) => words,
+                    Piece::Words(words) => FieldName::ALL.iter().fold(words, |words, f| words.replace(f.mark(), f.escaped())),
                     Piece::Field(field) => field.mark().to_string(),
                 })
                 .collect()
@@ -77,20 +101,32 @@ pub fn read_paragraphs(body: &TextBody) -> Vec<String> {
         .collect()
 }
 
-/// A paragraph's string as pieces: its marks fields, the rest words.
+/// A paragraph's string as pieces: its marks fields, the rest words (an escaped mark among them as the mark's words).
 fn parse(text: &str) -> Vec<Piece> {
-    let mut pieces = Vec::new();
+    let mut pieces: Vec<Piece> = Vec::new();
+    let words = |pieces: &mut Vec<Piece>, text: &str| match pieces.last_mut() {
+        _ if text.is_empty() => {}
+        Some(Piece::Words(before)) => before.push_str(text),
+        _ => pieces.push(Piece::Words(text.to_string())),
+    };
     let mut rest = text;
-    while let Some((at, field)) = FieldName::MARKS.iter().filter_map(|(f, mark)| rest.find(mark).map(|at| (at, *f))).min_by_key(|(at, _)| *at) {
-        if at > 0 {
-            pieces.push(Piece::Words(rest[..at].to_string()));
+    loop {
+        let next = FieldName::ALL
+            .iter()
+            .flat_map(|&f| [(f, true), (f, false)])
+            .filter_map(|(f, escaped)| rest.find(if escaped { f.escaped() } else { f.mark() }).map(|at| (at, f, escaped)))
+            .min_by_key(|&(at, _, escaped)| (at, !escaped));
+        let Some((at, field, escaped)) = next else { break };
+        words(&mut pieces, &rest[..at]);
+        if escaped {
+            words(&mut pieces, field.mark());
+            rest = &rest[at + field.escaped().len()..];
+        } else {
+            pieces.push(Piece::Field(field));
+            rest = &rest[at + field.mark().len()..];
         }
-        pieces.push(Piece::Field(field));
-        rest = &rest[at + field.mark().len()..];
     }
-    if !rest.is_empty() {
-        pieces.push(Piece::Words(rest.to_string()));
-    }
+    words(&mut pieces, rest);
     pieces
 }
 
@@ -143,8 +179,10 @@ impl SlideText {
 
     /// `body` with its text replaced. A paragraph given as it reads stays as it is. Another, paragraph `i`, keeps the
     /// format of the old paragraph `i` (the last one's, past its end), its words that of the old paragraph's first
-    /// words, and each mark one of the old text's fields of its kind not given yet, as it was: old paragraph `i`'s
-    /// first, then the text's first. A mark more than the old text had fields is refused.
+    /// words, and each mark one of the old text's fields of its kind, as it was. As many marks of a kind as its fields
+    /// take them in order (paragraphs put in or taken out move nothing); otherwise old paragraph `i`'s own go to its
+    /// marks first (every paragraph's before any is handed on), then those left over in order. A mark more than the old
+    /// text had fields is refused.
     pub fn replace(&self, body: &TextBody) -> Result<TextBody, String> {
         let old = &body.paragraphs;
         let mut kept: Vec<Kept> = old
@@ -161,6 +199,30 @@ impl SlideText {
         for k in kept.iter_mut() {
             k.used = unchanged.get(k.paragraph).copied().unwrap_or(false);
         }
+        let marks = |field: FieldName| self.0.iter().enumerate().filter(|(i, _)| !unchanged[*i]).flat_map(|(_, pieces)| pieces).filter(|p| **p == Piece::Field(field)).count();
+        let free = |field: FieldName| kept.iter().filter(|k| !k.used && k.field == field).count();
+        let in_order: Vec<FieldName> = FieldName::ALL.into_iter().filter(|&f| marks(f) == free(f)).collect();
+        let mut given: Vec<Vec<Option<usize>>> = self.0.iter().map(|pieces| vec![None; pieces.len()]).collect();
+        for own in [true, false] {
+            for (i, pieces) in self.0.iter().enumerate().filter(|(i, _)| !unchanged[*i]) {
+                for (j, piece) in pieces.iter().enumerate() {
+                    let Piece::Field(field) = piece else { continue };
+                    if given[i][j].is_some() || (own && in_order.contains(field)) {
+                        continue;
+                    }
+                    if let Some(at) = kept.iter().position(|k| !k.used && k.field == *field && (!own || k.paragraph == i)) {
+                        kept[at].used = true;
+                        given[i][j] = Some(at);
+                    } else if !own {
+                        return Err(format!(
+                            "paragraph {i}: the text has no more {} fields to keep (it had {}): a field stays in the text it was in, and is not made",
+                            field.mark(),
+                            kept.iter().filter(|k| k.field == *field).count()
+                        ));
+                    }
+                }
+            }
+        }
         let mut paragraphs = Vec::with_capacity(self.0.len());
         for (i, pieces) in self.0.iter().enumerate() {
             if unchanged[i] {
@@ -176,21 +238,10 @@ impl SlideText {
                 .map_or_else(|| template.end_style.clone(), |r| r.style.clone());
             let style = RunStyle { field: None, ..style };
             let mut runs = Vec::new();
-            for piece in pieces {
+            for (j, piece) in pieces.iter().enumerate() {
                 match piece {
                     Piece::Words(words) => runs.push(Run { text: words.clone(), style: style.clone() }),
-                    Piece::Field(field) => {
-                        let free = |k: &Kept| !k.used && k.field == *field;
-                        let at = kept.iter().position(|k| free(k) && k.paragraph == i).or_else(|| kept.iter().position(free)).ok_or_else(|| {
-                            format!(
-                                "paragraph {i}: the text has no more {} fields to keep (it had {}): a field stays in the text it was in, and is not made",
-                                field.mark(),
-                                kept.iter().filter(|k| k.field == *field).count()
-                            )
-                        })?;
-                        kept[at].used = true;
-                        runs.extend(kept[at].runs.iter().cloned());
-                    }
+                    Piece::Field(_) => runs.extend(kept[given[i][j].expect("every mark is given a field")].runs.iter().cloned()),
                 }
             }
             paragraphs.push(Paragraph { runs, end_style: style, ..template });
